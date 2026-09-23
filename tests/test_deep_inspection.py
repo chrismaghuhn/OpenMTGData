@@ -533,6 +533,30 @@ def test_operational_timing_does_not_change_evidence_digest(tmp_path: Path) -> N
     assert first.operational_metrics.wall_clock_seconds >= 0
 
 
+def test_inspection_timestamp_changes_audit_only_not_evidence_digest(tmp_path: Path) -> None:
+    files = {"game_data_public.AFR.PremierDraft.csv.gz": b"a,b\n1,true\n2,false\n"}
+    _, _, _, _, first = _pipeline(
+        tmp_path / "first",
+        files,
+        inspection_timestamp_utc="2026-01-01T00:00:00Z",
+    )
+    _, _, _, _, second = _pipeline(
+        tmp_path / "second",
+        files,
+        inspection_timestamp_utc="2027-01-01T00:00:00Z",
+    )
+
+    assert first.inspections[0].deep_inspection_id == second.inspections[0].deep_inspection_id
+    assert (
+        first.inspections[0].raw_schema_fingerprint == second.inspections[0].raw_schema_fingerprint
+    )
+    assert first.evidence_bytes == second.evidence_bytes
+    assert first.evidence_digest == second.evidence_digest
+    assert first.to_dict()["audit"] != second.to_dict()["audit"]
+    assert first.inspections[0].to_dict()["inspection_timestamp_utc"] == "2026-01-01T00:00:00Z"
+    assert "inspection_timestamp_utc" not in first.inspections[0].to_evidence_dict()
+
+
 def test_evidence_projection_is_independent_of_local_paths_and_registration_order(
     tmp_path: Path,
 ) -> None:

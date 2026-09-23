@@ -270,7 +270,8 @@ class DeepSourceInspectionV1:
     tool_identity: str | None
     inspection_timestamp_utc: str | None
 
-    def to_dict(self) -> dict[str, object]:
+    def to_evidence_dict(self) -> dict[str, object]:
+        """Serialize inspection evidence without its audit-only timestamp."""
         return {
             "columns": [column.to_dict() for column in self.columns],
             "compressed_sha256": self.compressed_sha256,
@@ -313,8 +314,13 @@ class DeepSourceInspectionV1:
             "source_url_status": self.source_url_status,
             "status": self.status.value,
             "tool_identity": self.tool_identity,
-            "inspection_timestamp_utc": self.inspection_timestamp_utc,
         }
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize full inspection content, including its separate audit timestamp."""
+        document = self.to_evidence_dict()
+        document["inspection_timestamp_utc"] = self.inspection_timestamp_utc
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,7 +556,7 @@ class DeepInspectionReportV1:
             "header_inspected_archive_count": self.header_inspected_archive_count,
             "header_inventory_contract_id": self.header_inventory_contract_id,
             "header_inventory_evidence_digest": self.header_inventory_evidence_digest,
-            "inspections": [item.to_dict() for item in self.inspections],
+            "inspections": [item.to_evidence_dict() for item in self.inspections],
             "lexical_class_totals": self.lexical_class_totals.to_dict(),
             "lexical_evidence_contract_id": self.lexical_evidence_contract_id,
             "license_status_counts": dict(self.license_status_counts),
@@ -640,6 +646,16 @@ class DeepInspectionReportV1:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "audit": {
+                "inspection_metadata": [
+                    {
+                        "deep_inspection_id": item.deep_inspection_id,
+                        "inspection_timestamp_utc": item.inspection_timestamp_utc,
+                        "source_archive_id": item.source_archive_id,
+                    }
+                    for item in self.inspections
+                ]
+            },
             "evidence": self.evidence_projection_dict(),
             "evidence_digest": self.evidence_digest,
             "operational_metrics": self.operational_metrics.to_dict(),
