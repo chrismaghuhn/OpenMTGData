@@ -33,3 +33,9 @@ python -m openmtgdata --version
 ```
 
 No dataset files are needed to install, import, or run these commands. The license for OpenMTGData source code has not yet been decided; it is separate from the licenses applicable to future input datasets.
+
+## Runtime filesystem roots
+
+`openmtgdata.config.RuntimeConfig` accepts one or more raw input roots and separate intermediate, quarantine, and release roots. Raw roots may be outside the repository. Relative roots are resolved against an explicit absolute `base_dir`; configuration does not depend implicitly on the process working directory. Raw roots must already exist as directories, while writable roots may be configured before creation.
+
+Configuration validation is read-only and does not inspect directory contents or dataset files. It does not create output directories. Canonical path resolution accounts for observable symlink/junction aliases, and all raw and writable roots must be mutually disjoint directory trees. The `runtime_config_digest` is SHA-256 over compact, sorted-key UTF-8 JSON using the `openmtgdata.runtime-config.v1` schema, platform-normalized resolved paths, and a sorted/deduplicated raw-root set. It identifies machine-local runtime paths for local execution/checkpoint use; it is not a source identity or dataset release identity, and Windows and POSIX paths are not treated as equivalent. This validation describes the filesystem topology visible at construction time; callers should validate again immediately before a later stage writes. Directory aliases that Python cannot observe through normal path resolution, such as some mount configurations or topology changes after validation, are outside this guarantee.
