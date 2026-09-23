@@ -1,6 +1,6 @@
 # OpenMTGData
 
-OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package can inventory candidate `.csv.gz` filesystem entries, classify canonical basenames, and register exact compressed-byte identities with streaming SHA-256. It does not validate gzip/CSV contents, inspect or support any source schema, interpret replay/game semantics, verify provenance URLs or licenses, build a dataset, or publish a public dataset.
+OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package can inventory candidate `.csv.gz` filesystem entries, classify canonical basenames, register exact compressed-byte identities with streaming SHA-256, and build a versioned source catalog with a semantic source-set digest. It does not parse CSV rows, inspect headers/schemas, interpret replay/game semantics, verify licenses, build Parquet datasets, publish a dataset, or train a model.
 
 Large raw archives and derived datasets do not belong in Git. Raw input roots may live outside the repository and will be supplied explicitly to future tools. The repository-relative `data/raw/17lands/` location is only a possible convenience default. OpenMTGData is independent of any particular model, including Laya and MageZero. An observed human action, if represented by a future view, describes behavior and is not an optimal-action claim.
 
@@ -32,11 +32,14 @@ python -m openmtgdata --help
 python -m openmtgdata --version
 openmtgdata inventory --help
 openmtgdata register --help
+openmtgdata manifest --help
 ```
 
 Inventory and registration require explicit `--raw-root` (repeatable), `--base-dir`, `--intermediate-root`, `--quarantine-root`, and `--release-root` options. The writable roots are validated but not created or written. Both commands emit deterministic JSON to stdout with paths labeled runtime-local. Inventory does not open candidate contents. Registration streams the exact compressed bytes to compute SHA-256; it does not decompress or validate gzip, parse CSV, inspect schemas, or determine source licenses. Results cover only the configured roots observed during traversal, not the global 17Lands publication.
 
 Registration reads sequentially in bounded 4 MiB chunks. The v1 `source_archive_id` is SHA-256 over canonical compact UTF-8 JSON containing only its ID contract, provider namespace, and compressed-byte SHA-256; filenames, local paths, size, timestamps, and tool versions are excluded from that ID. File identity/size/time metadata is checked around the read for mutation detection, subject to filesystem race limitations.
+
+`openmtgdata manifest` separates the full runtime-local audit catalog from a canonical semantic source-set projection. Its v1 selection rule includes an exact supplied source URL, license status/identifier, and recognized filename tokens; generic source evidence notes and license evidence references remain audit-only. Use `--validate-compression` to stream and discard decompressed bytes, then verify the registered compressed-byte identity through the M2.3 reader; this does not parse CSV or inspect schemas. Compression evidence is separate and never mutates `SourceArchiveRecordV1`. The source-level publication gate reports unreviewed/unknown source evidence as blocked without making manifest generation itself fail. No final dataset release is produced.
 
 The durable `SourceArchiveRecordV1` uses the SPEC field names `source_archive_record_schema_id` and `original_filename`, records `provider` separately from `provider_namespace`, and carries source URL/evidence, license-review, acquisition, and ingestion metadata with explicit `unknown` defaults. Local registration does not assert a license or fabricate acquisition/ingestion timestamps.
 

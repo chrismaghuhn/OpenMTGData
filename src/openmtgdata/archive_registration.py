@@ -637,6 +637,38 @@ def _ensure_same_entry(before: _StatSnapshot, after_info: os.stat_result, *, con
         )
 
 
+def _verify_opened_archive_unchanged(
+    item: InventoryItem,
+    stream: BinaryIO,
+    before_path_snapshot: _StatSnapshot,
+    opened_snapshot: _StatSnapshot,
+    *,
+    bytes_read: int | None = None,
+) -> None:
+    """Apply M2.3 file/path mutation checks to a verified open descriptor."""
+    try:
+        descriptor_after = os.fstat(stream.fileno())
+    except OSError as exc:
+        raise ArchiveReadError("cannot verify candidate descriptor after reading") from exc
+    if bytes_read is not None and bytes_read != before_path_snapshot.size:
+        raise ArchiveByteCountMismatchError(
+            f"read {bytes_read} bytes but initial stable size was {before_path_snapshot.size}"
+        )
+    _ensure_unchanged(opened_snapshot, descriptor_after, context="during binary reading")
+
+    _, final_path_info = _validate_path(item)
+    _ensure_unchanged(before_path_snapshot, final_path_info, context="during binary reading")
+    _ensure_same_entry(
+        opened_snapshot,
+        final_path_info,
+        context="between open descriptor and final path check",
+    )
+    if bytes_read is not None and bytes_read != final_path_info.st_size:
+        raise ArchiveByteCountMismatchError(
+            f"read {bytes_read} bytes but final stable size was {final_path_info.st_size}"
+        )
+
+
 @contextmanager
 def _open_verified_archive(
     item: InventoryItem,
@@ -769,28 +801,13 @@ def register_archive(
             for chunk in _iter_chunks(stream, chunk_size_bytes):
                 digest.update(chunk)
                 byte_count += len(chunk)
-
-            try:
-                descriptor_after = os.fstat(stream.fileno())
-            except OSError as exc:
-                raise ArchiveReadError("cannot verify candidate descriptor after hashing") from exc
-            if byte_count != before.size:
-                raise ArchiveByteCountMismatchError(
-                    f"read {byte_count} bytes but initial stable size was {before.size}"
-                )
-            _ensure_unchanged(opened_snapshot, descriptor_after, context="during binary hashing")
-
-            _, final_path_info = _validate_path(item)
-            _ensure_unchanged(before, final_path_info, context="during binary hashing")
-            _ensure_same_entry(
+            _verify_opened_archive_unchanged(
+                item,
+                stream,
+                before,
                 opened_snapshot,
-                final_path_info,
-                context="between open descriptor and final path check",
+                bytes_read=byte_count,
             )
-            if byte_count != final_path_info.st_size:
-                raise ArchiveByteCountMismatchError(
-                    f"read {byte_count} bytes but final stable size was {final_path_info.st_size}"
-                )
     except ArchiveRegistrationError:
         raise
     except OSError as exc:

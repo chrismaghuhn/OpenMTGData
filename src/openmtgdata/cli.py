@@ -10,8 +10,10 @@ from openmtgdata.archive_registration import (
     ArchiveRegistrationError,
     register_inventory_archives,
 )
+from openmtgdata.compression_validation import validate_registration_compression
 from openmtgdata.config import ConfigurationError, RuntimeConfig
 from openmtgdata.inventory import InventoryExecutionError, inventory_raw_roots
+from openmtgdata.source_manifest import SourceManifestError, build_source_manifest
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_runtime_root_arguments(register_parser, writable_root_context="registration")
+    manifest_parser = subparsers.add_parser(
+        "manifest",
+        help="build a source catalog and semantic source-set identity",
+        description=(
+            "Build a source-only catalog. Compression validation is opt-in; no CSV/schema "
+            "or dataset release work is performed."
+        ),
+    )
+    _add_runtime_root_arguments(manifest_parser, writable_root_context="manifest")
+    manifest_parser.add_argument(
+        "--validate-compression",
+        action="store_true",
+        help="stream gzip integrity validation for each registered source archive",
+    )
     return parser
 
 
@@ -81,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return a conventional process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command not in {"inventory", "register"}:
+    if args.command not in {"inventory", "register", "manifest"}:
         parser.print_help()
         return 0
 
@@ -95,10 +111,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if args.command == "inventory":
             report = inventory_raw_roots(config).to_dict()
-        else:
+        elif args.command == "register":
             inventory = inventory_raw_roots(config)
             report = register_inventory_archives(inventory).to_dict()
-    except (ConfigurationError, InventoryExecutionError, ArchiveRegistrationError) as exc:
+        else:
+            inventory = inventory_raw_roots(config)
+            registration = register_inventory_archives(inventory)
+            compression_evidence = (
+                validate_registration_compression(registration)
+                if args.validate_compression
+                else None
+            )
+            report = build_source_manifest(
+                registration,
+                compression_evidence=compression_evidence,
+            ).to_dict()
+    except (
+        ConfigurationError,
+        InventoryExecutionError,
+        ArchiveRegistrationError,
+        SourceManifestError,
+    ) as exc:
         print(f"openmtgdata: {exc}", file=sys.stderr)
         return 1
 
