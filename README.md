@@ -1,6 +1,6 @@
 # OpenMTGData
 
-OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package can inventory candidate `.csv.gz` filesystem entries and classify canonical 17Lands public-dump basenames. It does not validate archive contents, inspect or support any source schema, build a dataset, or publish a public dataset.
+OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package can inventory candidate `.csv.gz` filesystem entries, classify canonical basenames, and register exact compressed-byte identities with streaming SHA-256. It does not validate gzip/CSV contents, inspect or support any source schema, interpret replay/game semantics, verify provenance URLs or licenses, build a dataset, or publish a public dataset.
 
 Large raw archives and derived datasets do not belong in Git. Raw input roots may live outside the repository and will be supplied explicitly to future tools. The repository-relative `data/raw/17lands/` location is only a possible convenience default. OpenMTGData is independent of any particular model, including Laya and MageZero. An observed human action, if represented by a future view, describes behavior and is not an optimal-action claim.
 
@@ -23,7 +23,7 @@ ruff format --check .
 mypy src/openmtgdata
 ```
 
-The CLI supports help, version, and filename-only local inventory:
+The CLI supports help, version, filename-only local inventory, and exact-byte registration:
 
 ```bash
 openmtgdata --help
@@ -31,9 +31,14 @@ openmtgdata --version
 python -m openmtgdata --help
 python -m openmtgdata --version
 openmtgdata inventory --help
+openmtgdata register --help
 ```
 
-Inventory requires explicit `--raw-root` (repeatable), `--base-dir`, `--intermediate-root`, `--quarantine-root`, and `--release-root` options. The writable roots are validated but not created or written. The command emits deterministic JSON to stdout with paths labeled runtime-local. Candidate contents are not opened, hashed, or validated. Results cover only the configured roots observed during that traversal, not the global 17Lands publication.
+Inventory and registration require explicit `--raw-root` (repeatable), `--base-dir`, `--intermediate-root`, `--quarantine-root`, and `--release-root` options. The writable roots are validated but not created or written. Both commands emit deterministic JSON to stdout with paths labeled runtime-local. Inventory does not open candidate contents. Registration streams the exact compressed bytes to compute SHA-256; it does not decompress or validate gzip, parse CSV, inspect schemas, or determine source licenses. Results cover only the configured roots observed during traversal, not the global 17Lands publication.
+
+Registration reads sequentially in bounded 4 MiB chunks. The v1 `source_archive_id` is SHA-256 over canonical compact UTF-8 JSON containing only its ID contract, provider namespace, and compressed-byte SHA-256; filenames, local paths, size, timestamps, and tool versions are excluded from that ID. File identity/size/time metadata is checked around the read for mutation detection, subject to filesystem race limitations.
+
+Registration rejects observable symlink/reparse paths, uses `O_NOFOLLOW` where the platform provides it, and compares path metadata with the opened file descriptor before reading and again afterward. Python's standard library cannot make path validation and opening an atomic filesystem snapshot on every supported platform/filesystem; changes in the residual interval or filesystems without reliable file IDs/timestamps may not be observable. A successful record means the exact bytes read matched the stable metadata visible to these checks, not a transactional filesystem guarantee.
 
 Inventory does not create a transactional filesystem snapshot. An observed traversal error or candidate disappearing during classification fails the run; filesystem changes after an entry has been observed cannot always be detected. Observable symlink/reparse entries are reported and not followed. Alias mechanisms Python cannot identify remain outside this guarantee.
 
