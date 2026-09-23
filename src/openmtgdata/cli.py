@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from openmtgdata import __version__
 from openmtgdata.archive_registration import (
@@ -23,6 +24,13 @@ from openmtgdata.header_inspection import (
     build_header_inventory,
 )
 from openmtgdata.inventory import InventoryExecutionError, inventory_raw_roots
+from openmtgdata.schema_evolution import (
+    DeepReportValidationError,
+    SchemaEvolutionError,
+    build_schema_registry,
+    load_verified_m3_evidence,
+    write_schema_registry_no_overwrite,
+)
 from openmtgdata.source_manifest import SourceManifestError, build_source_manifest
 
 
@@ -111,6 +119,35 @@ def _build_parser() -> argparse.ArgumentParser:
             "existing files are never overwritten"
         ),
     )
+    schema_parser = subparsers.add_parser(
+        "classify-schemas",
+        help="assess M3.1 schema drift and build a deterministic interpretation registry",
+        description=(
+            "Classify persisted M3.1 evidence only. This command does not open raw archives, "
+            "normalize rows, or assign semantic field meanings."
+        ),
+    )
+    _add_runtime_root_arguments(schema_parser, writable_root_context="schema classification")
+    schema_parser.add_argument(
+        "--deep-report",
+        required=True,
+        help="persisted M3.1 deep-inspection JSON report to validate and classify",
+    )
+    schema_parser.add_argument(
+        "--expected-deep-evidence-digest",
+        help="optional required M3.1 evidence digest; mismatch fails closed",
+    )
+    schema_parser.add_argument(
+        "--expected-source-catalog-digest",
+        help="optional required semantic source-catalog digest; mismatch fails closed",
+    )
+    schema_parser.add_argument(
+        "--output",
+        help=(
+            "optional new schema-registry JSON under intermediate_root; existing files are "
+            "never overwritten"
+        ),
+    )
     return parser
 
 
@@ -151,7 +188,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return a conventional process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command not in {"inventory", "register", "manifest", "inspect-headers", "inspect-deep"}:
+    if args.command not in {
+        "inventory",
+        "register",
+        "manifest",
+        "inspect-headers",
+        "inspect-deep",
+        "classify-schemas",
+    }:
         parser.print_help()
         return 0
 
@@ -197,7 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "header_inventory": header_inventory.to_dict(),
                 "source_manifest": manifest.to_dict(),
             }
-        else:
+        elif args.command == "inspect-deep":
             inventory = inventory_raw_roots(config)
             registration = register_inventory_archives(inventory)
             compression_evidence = validate_registration_compression(registration)
@@ -230,6 +274,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     ),
                 }
+        else:
+            deep_report_path = Path(args.deep_report)
+            if not deep_report_path.is_absolute():
+                deep_report_path = Path(args.base_dir) / deep_report_path
+            verified_evidence = load_verified_m3_evidence(
+                deep_report_path,
+                expected_evidence_digest=args.expected_deep_evidence_digest,
+                expected_source_catalog_digest=args.expected_source_catalog_digest,
+            )
+            registry = build_schema_registry(verified_evidence)
+            report = registry.summary_dict()
+            if args.output is not None:
+                report["detailed_registry"] = {
+                    "path_scope": "runtime_local",
+                    "path": str(
+                        write_schema_registry_no_overwrite(
+                            registry,
+                            args.output,
+                            config,
+                            base_dir=args.base_dir,
+                        )
+                    ),
+                }
     except (
         ConfigurationError,
         InventoryExecutionError,
@@ -237,6 +304,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         SourceManifestError,
         HeaderInspectionExecutionError,
         DeepInspectionError,
+        DeepReportValidationError,
+        SchemaEvolutionError,
     ) as exc:
         print(f"openmtgdata: {exc}", file=sys.stderr)
         return 1
