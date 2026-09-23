@@ -1,6 +1,6 @@
 # OpenMTGData
 
-OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package currently provides only a development scaffold; it does not yet inspect or support any source schema, build a dataset, or publish a public dataset.
+OpenMTGData is early infrastructure for building reproducible, provenance-preserving, model-independent Magic: The Gathering datasets. The first intended source is the intentionally published 17Lands Public Datasets. The package can recognize the canonical structure of a supplied 17Lands public-dump basename; it does not scan directories, validate archives, inspect or support any source schema, build a dataset, or publish a public dataset.
 
 Large raw archives and derived datasets do not belong in Git. Raw input roots may live outside the repository and will be supplied explicitly to future tools. The repository-relative `data/raw/17lands/` location is only a possible convenience default. OpenMTGData is independent of any particular model, including Laya and MageZero. An observed human action, if represented by a future view, describes behavior and is not an optimal-action claim.
 
