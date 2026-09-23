@@ -7,6 +7,10 @@
 /data/derived/
 /reports/
 
+# Local model weights/checkpoints
+/model/
+/models/
+
 # Python environments and caches
 .venv/
 venv/
