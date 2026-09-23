@@ -1,0 +1,32 @@
+# Local source data and generated datasets. Keep tiny fixtures in tests/fixtures/.
+/data/raw/
+/data/intermediate/
+/data/quarantine/
+/data/releases/
+/data/reports/
+/data/derived/
+/reports/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build, packaging, and coverage output
+/build/
+/dist/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Editor and operating-system noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
