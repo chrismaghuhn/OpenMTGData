@@ -1,6 +1,6 @@
 # OpenMTGData Implementation Plan
 
-This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequential unless a task is explicitly independent. Each task is small enough to implement and review on its own. Schema-dependent work is blocked until M3 records evidence from actual archives. No task authorizes committing large source archives or training a model.
+This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequential unless a task is explicitly independent. Each task is small enough to implement and review on its own. Schema-dependent work is blocked until M3 records evidence from actual archives. “Complete inventory” means all candidate files under explicitly configured local input roots for that run, not all global 17Lands history. Raw roots may be outside the repository; `data/raw/17lands/` is only an optional default. Never commit an absolute user-specific path. All roots receive equal immutable/hash treatment, and output/intermediate/quarantine/release roots must resolve outside configured raw roots. No task authorizes committing large source archives or training a model.
 
 ## M0 — Specification
 
@@ -21,7 +21,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Create a minimal maintainable Python 3.11+ package and contributor workflow.
 - **Allowed scope:** Packaging metadata, source package skeleton, CI configuration, lint/type/test configuration, `.gitignore`, contributor docs.
 - **Dependencies:** M0 accepted.
-- **Implementation requirements:** Define supported Python versions and pinned/managed dependencies; ignore `data/raw/17lands/`, derived build outputs, caches, and local reports while allowing tiny fixtures. Document no full archives in Git. Keep CLI entry point placeholder or scaffold only.
+- **Implementation requirements:** Define supported Python versions and pinned/managed dependencies; ignore the optional `data/raw/17lands/`, derived build outputs, caches, and local reports while allowing tiny fixtures. Accept explicitly configured external input roots; never commit absolute user-specific paths. Validate that output/intermediate/quarantine/release roots cannot resolve into or overwrite configured raw roots. Document no full archives in Git. Keep CLI entry point placeholder or scaffold only.
 - **Tests:** CI installs package and runs a trivial package/import/configuration check.
 - **Acceptance criteria:** Clean checkout can install the package and invoke documented tooling; raw and derived paths are ignored; fixture exceptions are explicit; no production transform logic.
 - **Out of scope:** CSV adapters, source schema declarations, data downloads, model code.
@@ -31,12 +31,12 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Specify runtime configuration locations and prevent source overwrite.
 - **Allowed scope:** Config example/schema and path-handling scaffolding.
 - **Dependencies:** M1.1.
-- **Implementation requirements:** Separate raw, intermediate, quarantine, and release roots; validate resolved paths; make configuration canonicalizable for digests; avoid secrets.
+- **Implementation requirements:** Separate explicit raw input roots from intermediate, quarantine, and release roots; raw roots may be external and repo-relative `data/raw/17lands/` is only a default. Validate resolved paths and require all output roots to remain outside raw roots; make configuration canonicalizable for digests; avoid secrets and never commit absolute user paths.
 - **Tests:** Path traversal and raw-output collision unit tests.
 - **Acceptance criteria:** Invalid roots fail before writes; configuration digest excludes operational timestamps and is deterministic.
 - **Out of scope:** Stage execution, source-specific path discovery.
 
-## M2 — Source discovery and `SourceManifestV1`
+## M2 — Local source discovery, immutable registration, and header inventory
 
 ### M2.1 — Implement canonical filename recognition
 
@@ -48,36 +48,56 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Acceptance criteria:** Parser is deterministic and never silently classifies unknown files.
 - **Out of scope:** Reading CSV headers or pairing on unverified keys.
 
-### M2.2 — Define and serialize `SourceManifestV1`
+### M2.2 — Discover and catalog every candidate in configured roots
 
-- **Objective:** Record required/optional/derived source metadata canonically.
-- **Allowed scope:** Manifest model, canonical serialization, golden fixtures.
-- **Dependencies:** M2.1.
-- **Implementation requirements:** Include archive SHA-256, byte size, provider/family, original filename, URL when known, source kind/set/format, license review status, ingestion timestamp, builder version, and later schema fingerprint slot. Explicitly encode unavailable metadata.
-- **Tests:** Golden serialization/digest tests; missing optional metadata; duplicate archive identity; manifest schema validation.
-- **Acceptance criteria:** Same artifact/metadata/config emits identical semantic manifest bytes/digest; operational timestamp does not alter semantic identity.
-- **Out of scope:** Declaring all files licensed without per-source review; downloading archives.
+- **Objective:** Account for every local candidate `.csv.gz` before selecting deep-inspection samples.
+- **Allowed scope:** Inventory command and catalog report; no row-level processing.
+- **Dependencies:** M1.1, M1.2, M2.1.
+- **Implementation requirements:** Walk all explicit roots deterministically; recognize canonical names or catalog unknowns; report root/scope; do not assume a global corpus. Discovery can finish successfully with unsupported findings.
+- **Tests:** Nested/external roots, duplicate paths, unknown files, deterministic inventory, path escape prevention.
+- **Acceptance criteria:** Every candidate is listed exactly once or has an explicit diagnostic; report states configured roots; external files are treated exactly like in-repository files.
+- **Out of scope:** Reading full CSV bodies, silently excluding unknown files.
 
-### M2.3 — Stream archive hashing and license/source catalog reports
+### M2.3 — Define immutable `SourceArchiveRecordV1`
 
-- **Objective:** Hash exact compressed bytes and produce auditable catalog output.
-- **Allowed scope:** File streaming utility and local inspection reports.
+- **Objective:** Register exact compressed artifacts immutably.
+- **Allowed scope:** Source archive record model and canonical serialization.
 - **Dependencies:** M2.2.
-- **Implementation requirements:** Bounded-memory SHA-256; record compressed size; collect official URL/license evidence without relying on undocumented APIs; publication status stays pending until reviewed.
-- **Tests:** Known digest fixture, empty/truncated/unreadable files, stable catalog output.
-- **Acceptance criteria:** No full-file memory read; invalid compressed files are diagnosable; pending license blocks release eligibility.
+- **Implementation requirements:** Store provider, exact filename, compressed SHA-256/size, verified parsed metadata, source URL/evidence where known, license status, and acquisition/ingestion audit metadata. Derive artifact ID solely from provider namespace and compressed digest; registration never changes after inspection.
+- **Tests:** Golden record tests; digest/size verification; metadata gaps; same bytes through different tool versions retain same artifact ID; changed bytes yield new ID.
+- **Acceptance criteria:** Source identity excludes tool/builder and operational metadata; unknown values remain explicit.
+- **Out of scope:** Schema fingerprints in registration; assigning unverified licenses.
+
+### M2.4 — Stream archive hashing and define `SourceManifestV1` projections
+
+- **Objective:** Hash source bytes and separate audit catalog document from semantic source-set identity.
+- **Allowed scope:** Streaming hash utility, catalog model, serializers and evidence report.
+- **Dependencies:** M2.3.
+- **Implementation requirements:** Define canonical catalog document and semantic projection field-by-field per SPEC; timestamps, local paths, and tool identities excluded from semantic projection; builder/tool identity stays in audit metadata. License publication status stays pending until reviewed.
+- **Tests:** Known digest fixture, timestamp/tool/path invariance for semantic digest, input order invariance, changed source-set membership changes digest.
+- **Acceptance criteria:** No vague “semantic manifest bytes”; exact projection and versioned digest behavior are tested. Invalid compressed data is diagnosed; pending license blocks release eligibility.
 - **Out of scope:** Processing CSV rows or publishing data.
+
+### M2.5 — Header-only inventory for every readable candidate
+
+- **Objective:** Compute physical schema evidence for the complete configured local corpus before representative selection.
+- **Allowed scope:** Streaming gzip header/dialect scanner and `SourceInspectionV1` header-only reports.
+- **Dependencies:** M2.2–M2.4.
+- **Implementation requirements:** Read only enough decompressed CSV to parse the header for each readable archive; bounded-memory; attach source archive ID; compute raw schema fingerprint independent of interpretation/tool; group by source kind, fingerprint, verified expansion/format. Clearly state unreadable/unknown cases and root scope.
+- **Tests:** Gzip/header edge cases, fingerprint independence from tool metadata, reordered/different headers, inventory count reconciliation, bounded-memory test.
+- **Acceptance criteria:** Every readable candidate under configured roots has a header inspection and group assignment; reports make no claim about unconfigured/global files.
+- **Out of scope:** Full row scans, semantic field claims, final adapter decisions.
 
 ## M3 — Real source schema inspection (adapter gate)
 
-### M3.1 — Select representative local archives and record evidence
+### M3.1 — Select deep-inspection representatives from every observed raw schema group
 
 - **Objective:** Inspect actual downloaded Replay and matching Game archives before fixing adapters.
 - **Allowed scope:** Inspection report tooling and reports outside committed large-data artifacts; small sanitized metadata reports may be committed.
-- **Dependencies:** M2.1–M2.3; user-provided/downloaded archives available locally under ignored raw path.
-- **Implementation requirements:** Cover early and recent eras, multiple observed formats, replay and game files, and every distinct header variant. Record exact headers, types/nullability evidence, dialect/encoding behavior, archive digests, and source URLs. Do not infer columns from documentation or filenames.
+- **Dependencies:** M2.5; configured local archives available (no requirement to download global history).
+- **Implementation requirements:** First establish all raw fingerprint groups in the configured local corpus via M2.5; then select representatives from every observed group, with additional early/recent and format coverage as available. Record type/nullability/row-level parsing evidence, archive digests, and source URLs. Do not infer columns from documentation or filenames.
 - **Tests:** Inspection-report determinism and schema fingerprint golden tests using tiny lawful fixtures; manual cross-check against actual archives.
-- **Acceptance criteria:** Evidence table identifies all inspected files and variants; unknown fields remain uninterpreted; no adapter locks columns before review.
+- **Acceptance criteria:** Header inventory covers every readable candidate in configured roots; every observed group has a deep-inspection representative or explicit blocker; unknown fields remain uninterpreted; no adapter locks columns before review.
 - **Out of scope:** Normalization, decision extraction, downloading the entire corpus.
 
 ### M3.2 — Decide schema identity and evolution policy
@@ -85,9 +105,9 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Define compatibility classes from observed drift.
 - **Allowed scope:** Schema reports, policy ADR, schema registry metadata.
 - **Dependencies:** M3.1.
-- **Implementation requirements:** Fingerprint ordered headers plus versioned interpretation; classify additive, type/nullability, reorder, rename, removal, and semantic drift. Specify fail-closed behavior and explicit compatible-addition rules.
+- **Implementation requirements:** Keep `raw_schema_fingerprint` (physical header/dialect evidence) separate from versioned `source_interpretation_contract_id` (semantic adapter mapping). Classify additive, type/nullability, reorder, rename, removal, and semantic drift. Specify fail-closed behavior and explicit compatible-addition rules.
 - **Tests:** Compatibility matrix tests for observed and synthetic drift cases.
-- **Acceptance criteria:** Each inspected archive maps to a documented schema identity; incompatible drift is rejected with actionable diagnostics.
+- **Acceptance criteria:** Each readable archive maps to a documented raw fingerprint and each deeply inspected group to an interpretation contract; incompatible drift is rejected with actionable diagnostics. Correcting interpretation does not change raw fingerprint.
 - **Out of scope:** Assuming all eras share one schema; silently dropping unknown columns.
 
 ## M4 — Streaming source readers
@@ -107,9 +127,9 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Resume source reading safely after interruption.
 - **Allowed scope:** Checkpoint metadata and reader orchestration.
 - **Dependencies:** M4.1.
-- **Implementation requirements:** Checkpoint keys include archive digest, schema fingerprint, builder and config identity; incomplete batches are not exposed as complete outputs.
-- **Tests:** Interrupted/resumed versus uninterrupted semantic equivalence; changed-input invalidates checkpoint.
-- **Acceptance criteria:** Resume does not skip, duplicate, or reorder source records without detection.
+- **Implementation requirements:** Plain gzip MUST NOT resume from an arbitrary compressed-byte offset unless a separately proven/indexed mechanism establishes correctness. Initial strategies are deterministic re-streaming to a stable record/batch ordinal or checkpointing completed durable stage/batch/shard units and restarting source streaming as needed. Prefer completed units over transport offsets. Checkpoint identity binds exact archive digest, raw schema fingerprint, interpretation contract, builder/stage version, and canonical relevant config. Write partial outputs under incomplete/temporary identities and atomically promote only after validation.
+- **Tests:** Crash injection before/during/after batch and shard finalization; interrupted/resumed versus uninterrupted semantic equivalence; changed input/schema/interpretation/config invalidates checkpoint; incomplete output is not visible as complete.
+- **Acceptance criteria:** A crash cannot skip or duplicate accepted records, reorder semantic identities, or expose a partial artifact as complete; no naive gzip seek.
 - **Out of scope:** Distributed processing.
 
 ## M5 — Normalized source layer
@@ -173,7 +193,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Produce model-agnostic behavioral samples for only approved decision types.
 - **Allowed scope:** Decision schema, extractor, quality codes.
 - **Dependencies:** M7.1.
-- **Implementation requirements:** Label `observed_action`; separate input, label, and post-decision metadata; include provenance, reconstruction level, completeness, legality/target status; no unsupported field claims.
+- **Implementation requirements:** Label `observed_action`; separate input, label, and post-decision metadata; include provenance, reconstruction level, completeness, `observed_action_status`, `legal_actions_status`, and optional distinct `action_target_status` only for Magic action targets; no bare `target_status` and no unsupported field claims. Declare field origin/derivation and perspective safety.
 - **Tests:** Contract/schema tests; no-future-input tests; hidden-information exclusion tests; source-to-sample provenance checks.
 - **Acceptance criteria:** Policy view fails closed on unsafe/ambiguous samples and cannot present observed behavior as optimal policy.
 - **Out of scope:** Legal candidate generation and model-specific tokenization.
@@ -226,8 +246,8 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 - **Objective:** Capture identities, config, inputs, counts, and output checksums.
 - **Allowed scope:** Manifest contract, serializer, verifier.
-- **Dependencies:** M2.2, M9.1.
-- **Implementation requirements:** Semantic release identity excludes timestamps; include all schema/split/builder identities, input manifest/config digests, per-view/split counts, rejects/quarantine and file hashes.
+- **Dependencies:** M2.4, M3.2, M9.1.
+- **Implementation requirements:** Distinguish versioned `semantic_release_id` (logical contracts/source/config and established record/partition equivalence), `build_audit_id` (execution/tool/dependency identity), and `artifact_manifest_digest` (actual output file paths/sizes/counts/byte hashes). Timestamps are excluded from semantic identity but retained for audit. Do not claim semantic equivalence solely from compatible-looking runtime versions.
 - **Tests:** Golden manifest, timestamp invariance for semantic ID, missing/extra output detection.
 - **Acceptance criteria:** Manifest verifier detects mismatch between declared and actual artifacts.
 - **Out of scope:** Claiming cross-library byte-reproducibility absent proof.
@@ -298,23 +318,23 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Acceptance criteria:** Release scope and limitations are explicit; unresolved critical issues block publication rather than being assumed away.
 - **Out of scope:** Expanding to unsupported archive families.
 
-## M13 — Scale-out build
+## M13 — Scale-out processing/build
 
-### M13.1 — Inventory all available compatible archives
+### M13.1 — Reconcile newly discovered files and inventory drift
 
-- **Objective:** Catalog user-downloaded Replay/Game/Draft archives and classify compatibility.
-- **Allowed scope:** Manifests, schema reports, compatibility inventory.
-- **Dependencies:** M12 release contract.
-- **Implementation requirements:** Hash every archive; verify filename/source/license; classify supported, unsupported, incomplete, and unknown; Draft remains catalogued even when not processed.
-- **Tests:** Inventory count reconciliation and deterministic rerun.
-- **Acceptance criteria:** Every discovered file is accounted for; unsupported archives have actionable reasons.
-- **Out of scope:** Forcing incompatible history into v0.1.
+- **Objective:** Re-run M2/M3 inventory against configured roots before a scale-out build and reconcile additions/removals/changes since the approved inventory.
+- **Allowed scope:** Inventory/registration/header-inspection reports and compatibility reconciliation.
+- **Dependencies:** M2–M3 implementation and M12 release contract.
+- **Implementation requirements:** Hash and header-inspect newly discovered files; retain existing immutable registrations; classify supported, unsupported, changed, incomplete, and unknown; Draft remains catalogued when not processed. Unsupported findings do not by themselves make inventory command execution fail.
+- **Tests:** New/removed/changed file reconciliation; stable rerun; unknown file catalogued successfully.
+- **Acceptance criteria:** Every configured-root candidate is accounted for before build; changed bytes get new artifact identity; actionable reasons are recorded.
+- **Out of scope:** First discovery/inventory of the corpus (M2/M3); forcing incompatible history into v0.1.
 
 ### M13.2 — Build all compatible gameplay views
 
 - **Objective:** Produce a full-scale release from compatible licensed Replay/Game archives.
 - **Allowed scope:** Local ignored inputs and release artifacts.
-- **Dependencies:** M13.1, M10, M11.
+- **Dependencies:** M13.1 reconciliation, M10, M11.
 - **Implementation requirements:** Bounded-memory, resumable execution; per-source reports; complete release manifest; all quality and split gates.
 - **Tests:** Full validation; sample and shard audit; deterministic semantic rebuild check on selected subset.
 - **Acceptance criteria:** No silent exclusions; all files accounted for; complete release passes privacy/license/provenance checks.
@@ -334,7 +354,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 ## Cross-milestone review gates
 
-1. M3 evidence is a hard gate before source adapters lock columns or types.
+1. M2/M3 full configured-root header inventory is a hard gate before claims about observed schema variants; M3 evidence is a hard gate before source adapters lock columns or types.
 2. M6 evidence is a hard gate before replay/game records are joined.
 3. M7 safety evidence is a hard gate before policy imitation samples are emitted.
 4. M8 grouping evidence is a hard gate before split labels are published.
