@@ -12,7 +12,7 @@ import json
 import os
 import socket
 from collections.abc import Iterator
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -24,15 +24,20 @@ from openmtgdata.archive_registration import (
     HASH_CHUNK_SIZE_BYTES,
     PROVIDER_NAMESPACE,
     SOURCE_ARCHIVE_ID_CONTRACT_ID,
-    SOURCE_ARCHIVE_RECORD_CONTRACT_ID,
+    SOURCE_ARCHIVE_RECORD_SCHEMA_ID,
+    AcquisitionMetadataV1,
     ArchiveByteCountMismatchError,
     ArchiveChangedDuringRegistrationError,
     ArchiveFileDisappearedError,
     ArchiveRegistrationError,
     ArchiveRegistrationResult,
     ArchiveSymlinkError,
+    IngestionAuditMetadataV1,
+    LicenseReviewStatus,
+    MetadataAvailability,
     RegistrationConfigurationError,
     RegistrationExecutionError,
+    SourceArchiveMetadataV1,
     SourceArchiveRecordV1,
     derive_source_archive_id,
     register_archive,
@@ -104,16 +109,17 @@ def test_single_archive_record_contains_exact_sha_size_and_contracts(tmp_path: P
     record = register_archive(item)
 
     assert isinstance(record, SourceArchiveRecordV1)
-    assert record.record_contract_id == SOURCE_ARCHIVE_RECORD_CONTRACT_ID
+    assert record.source_archive_record_schema_id == SOURCE_ARCHIVE_RECORD_SCHEMA_ID
     assert record.source_archive_id_contract_id == SOURCE_ARCHIVE_ID_CONTRACT_ID
     assert record.filename_contract_id == FILENAME_CONTRACT_ID
     assert record.inventory_contract_id == inventory_raw_roots(config).contract_id
     assert record.provider_namespace == PROVIDER_NAMESPACE
+    assert record.provider == "17lands"
     assert record.compressed_sha256 == hashlib.sha256(b"binary\x00bytes\n").hexdigest()
     assert len(record.compressed_sha256) == 64
     assert record.compressed_sha256 == record.compressed_sha256.lower()
     assert record.compressed_size_bytes == len(b"binary\x00bytes\n")
-    assert record.original_basename == item.basename
+    assert record.original_filename == item.basename
     assert isinstance(record.filename_result, RecognizedSourceFilename)
     assert record.filename_result == parse_source_filename(item.basename)
     assert record.source_kind is not None and record.source_kind.value == "game"
@@ -144,7 +150,7 @@ def test_unrecognized_filename_is_preserved_and_registered(tmp_path: Path) -> No
     assert record.source_kind is None
     assert record.expansion_token is None
     assert record.format_token is None
-    assert record.original_basename == "banana.csv.gz"
+    assert record.original_filename == "banana.csv.gz"
 
 
 def test_same_bytes_at_different_paths_and_filenames_share_portable_id(
@@ -167,7 +173,7 @@ def test_same_bytes_at_different_paths_and_filenames_share_portable_id(
     assert records[0].source_archive_id == records[1].source_archive_id
     assert records[0].compressed_sha256 == records[1].compressed_sha256 == _VECTOR_SHA256
     assert records[0].raw_root != records[1].raw_root
-    assert records[0].original_basename != records[1].original_basename
+    assert records[0].original_filename != records[1].original_filename
     assert records[0].source_archive_id == derive_source_archive_id(_VECTOR_SHA256)
 
 
@@ -210,7 +216,7 @@ def test_id_does_not_use_file_size_independently_or_filename(tmp_path: Path) -> 
     record_b = register_archive(item_b)
 
     assert record_a.compressed_size_bytes == record_b.compressed_size_bytes
-    assert record_a.original_basename != record_b.original_basename
+    assert record_a.original_filename != record_b.original_filename
     assert record_a.source_archive_id == record_b.source_archive_id
 
 
@@ -482,11 +488,153 @@ def test_record_portable_and_runtime_local_serialization_are_separate(tmp_path: 
     record = register_archive(item)
     serialized = record.to_dict()
 
-    assert set(serialized) == {"portable_semantic", "runtime_local"}
+    assert set(serialized) == {"audit_metadata", "portable_semantic", "runtime_local"}
     assert serialized["portable_semantic"]["source_archive_id"] == record.source_archive_id
+    assert serialized["portable_semantic"]["source_archive_record_schema_id"] == (
+        SOURCE_ARCHIVE_RECORD_SCHEMA_ID
+    )
+    assert serialized["portable_semantic"]["original_filename"] == record.original_filename
+    assert "original_basename" not in serialized["portable_semantic"]
+    assert (
+        serialized["portable_semantic"]["filename_classification"]["original_filename"]
+        == record.original_filename
+    )
+    assert "original_basename" not in serialized["portable_semantic"]["filename_classification"]
     assert serialized["runtime_local"]["path_scope"] == "runtime_local"
     assert b"runtime_local" in record.canonical_bytes
     assert b"timestamp" not in record.canonical_bytes
+
+
+def test_local_archive_metadata_is_explicitly_unknown_by_default(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+
+    record = register_archive(item)
+    serialized = record.to_dict()
+
+    assert record.source_url is None
+    assert record.source_url_status is MetadataAvailability.UNKNOWN
+    assert record.source_evidence_refs == ()
+    assert record.license_status is LicenseReviewStatus.UNKNOWN
+    assert record.license_identifier is None
+    assert record.license_evidence_refs == ()
+    assert record.acquisition_metadata.status is MetadataAvailability.UNKNOWN
+    assert record.acquisition_metadata.acquired_from is None
+    assert record.acquisition_metadata.acquired_at_utc is None
+    assert record.ingestion_audit_metadata.status is MetadataAvailability.UNKNOWN
+    assert record.ingestion_audit_metadata.ingested_at_utc is None
+    assert record.ingestion_audit_metadata.registration_tool_identity is None
+
+    portable = serialized["portable_semantic"]
+    audit = serialized["audit_metadata"]
+    assert portable["source_url_status"] == "unknown"
+    assert portable["source_url"] is None
+    assert portable["source_evidence_refs"] == []
+    assert portable["license_status"] == "unknown"
+    assert portable["license_identifier"] is None
+    assert portable["license_evidence_refs"] == []
+    assert audit["acquisition_metadata"] == {
+        "acquired_at_utc": None,
+        "acquired_from": None,
+        "status": "unknown",
+    }
+    assert audit["ingestion_audit_metadata"] == {
+        "ingested_at_utc": None,
+        "registration_tool_identity": None,
+        "status": "unknown",
+    }
+    assert record.canonical_bytes == register_archive(item).canonical_bytes
+
+
+def test_source_url_and_evidence_metadata_do_not_change_source_archive_id(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+    without_metadata = register_archive(item)
+    with_url = register_archive(
+        item,
+        source_metadata=SourceArchiveMetadataV1(
+            source_url_status=MetadataAvailability.PROVIDED,
+            source_url="https://example.invalid/public/archive.csv.gz",
+            source_evidence_refs=("synthetic evidence reference",),
+        ),
+    )
+
+    assert with_url.source_url_status is MetadataAvailability.PROVIDED
+    assert with_url.source_url == "https://example.invalid/public/archive.csv.gz"
+    assert with_url.source_archive_id == without_metadata.source_archive_id
+
+
+def test_license_status_and_evidence_do_not_change_source_archive_id(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+    without_metadata = register_archive(item)
+    pending_review = register_archive(
+        item,
+        source_metadata=SourceArchiveMetadataV1(
+            license_status=LicenseReviewStatus.PENDING_REVIEW,
+            license_identifier="example-license-id",
+            license_evidence_refs=("synthetic review note; not verified",),
+        ),
+    )
+
+    assert pending_review.license_status is LicenseReviewStatus.PENDING_REVIEW
+    assert pending_review.license_identifier == "example-license-id"
+    assert pending_review.source_archive_id == without_metadata.source_archive_id
+
+
+def test_acquisition_and_ingestion_audit_metadata_do_not_change_source_archive_id(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+    without_metadata = register_archive(item)
+    with_audit = register_archive(
+        item,
+        acquisition_metadata=AcquisitionMetadataV1(
+            status=MetadataAvailability.PROVIDED,
+            acquired_from="synthetic local acquisition record",
+            acquired_at_utc="2026-01-02T03:04:05Z",
+        ),
+        ingestion_audit_metadata=IngestionAuditMetadataV1(
+            status=MetadataAvailability.PROVIDED,
+            ingested_at_utc="2026-01-02T03:04:06Z",
+            registration_tool_identity="synthetic-test-tool/1",
+        ),
+    )
+
+    assert with_audit.acquisition_metadata.status is MetadataAvailability.PROVIDED
+    assert with_audit.ingestion_audit_metadata.status is MetadataAvailability.PROVIDED
+    assert with_audit.registration_status is without_metadata.registration_status
+    assert with_audit.source_archive_id == without_metadata.source_archive_id
+
+
+def test_absent_optional_evidence_keeps_source_identity_unchanged(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+    default_record = register_archive(item)
+    explicit_unknowns = register_archive(
+        item,
+        source_metadata=SourceArchiveMetadataV1(),
+        acquisition_metadata=AcquisitionMetadataV1(),
+        ingestion_audit_metadata=IngestionAuditMetadataV1(),
+    )
+
+    assert explicit_unknowns.source_archive_id == default_record.source_archive_id
+    assert explicit_unknowns.portable_projection == default_record.portable_projection
+    assert explicit_unknowns.audit_projection == default_record.audit_projection
+
+
+def test_archive_record_and_metadata_objects_remain_frozen(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    item = make_inventory_item(config, "game_data_public.AFR.PremierDraft.csv.gz")
+    record = register_archive(item)
+
+    with pytest.raises(FrozenInstanceError):
+        record.original_filename = "changed.csv.gz"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        record.source_metadata.source_url = "https://example.invalid/changed"  # type: ignore[misc]
 
 
 def test_batch_all_or_error_does_not_return_partial_records(tmp_path: Path) -> None:
@@ -560,7 +708,7 @@ def test_register_cli_emits_final_json_and_does_not_create_writable_roots(
     assert report["unique_source_archive_id_count"] == 1
     assert report["total_compressed_bytes"] == len(_VECTOR_BYTES)
     assert report["provider_namespace"] == PROVIDER_NAMESPACE
-    assert report["record_contract_id"] == SOURCE_ARCHIVE_RECORD_CONTRACT_ID
+    assert report["source_archive_record_schema_id"] == SOURCE_ARCHIVE_RECORD_SCHEMA_ID
     assert report["source_archive_id_contract_id"] == SOURCE_ARCHIVE_ID_CONTRACT_ID
     assert (
         report["records"][0]["portable_semantic"]["filename_classification"]["disposition"]

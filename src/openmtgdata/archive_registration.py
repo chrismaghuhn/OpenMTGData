@@ -29,7 +29,8 @@ from openmtgdata.source_filename import (
 )
 
 PROVIDER_NAMESPACE = "17lands.public-datasets"
-SOURCE_ARCHIVE_RECORD_CONTRACT_ID = "openmtgdata.source-archive-record.v1"
+PROVIDER = "17lands"
+SOURCE_ARCHIVE_RECORD_SCHEMA_ID = "openmtgdata.source-archive-record.v1"
 SOURCE_ARCHIVE_ID_CONTRACT_ID = "openmtgdata.source-archive-id.v1"
 ARCHIVE_REGISTRATION_CONTRACT_ID = "openmtgdata.archive-registration.v1"
 HASH_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
@@ -84,20 +85,158 @@ class RegistrationStatus(StrEnum):
     REGISTERED = "registered"
 
 
+class MetadataAvailability(StrEnum):
+    """Whether optional registration/audit metadata was explicitly supplied."""
+
+    UNKNOWN = "unknown"
+    PROVIDED = "provided"
+
+
+class LicenseReviewStatus(StrEnum):
+    """Review state of per-source license metadata; no license is assumed."""
+
+    UNKNOWN = "unknown"
+    PENDING_REVIEW = "pending_review"
+    VERIFIED = "verified"
+    INCOMPATIBLE = "incompatible"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceArchiveMetadataV1:
+    """Source URL/evidence and license metadata, explicitly unknown by default."""
+
+    source_url_status: MetadataAvailability = MetadataAvailability.UNKNOWN
+    source_url: str | None = None
+    source_evidence_refs: tuple[str, ...] = ()
+    license_status: LicenseReviewStatus = LicenseReviewStatus.UNKNOWN
+    license_identifier: str | None = None
+    license_evidence_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_url_status, MetadataAvailability):
+            raise ValueError("source_url_status must be MetadataAvailability")
+        if not isinstance(self.license_status, LicenseReviewStatus):
+            raise ValueError("license_status must be LicenseReviewStatus")
+        if not isinstance(self.source_evidence_refs, tuple) or not isinstance(
+            self.license_evidence_refs, tuple
+        ):
+            raise ValueError("evidence references must be immutable tuples")
+        if not all(isinstance(value, str) for value in self.source_evidence_refs):
+            raise ValueError("source evidence references must be strings")
+        if not all(isinstance(value, str) for value in self.license_evidence_refs):
+            raise ValueError("license evidence references must be strings")
+        if any(not value for value in self.source_evidence_refs + self.license_evidence_refs):
+            raise ValueError("evidence references must be non-empty strings")
+        source_values_present = self.source_url is not None or bool(self.source_evidence_refs)
+        if self.source_url_status is MetadataAvailability.UNKNOWN and source_values_present:
+            raise ValueError("unknown source URL status cannot carry source URL/evidence values")
+        if self.source_url_status is MetadataAvailability.PROVIDED and not source_values_present:
+            raise ValueError("provided source URL status requires a URL or evidence reference")
+        if self.source_url == "":
+            raise ValueError("source_url must be non-empty when provided")
+
+        license_values_present = self.license_identifier is not None or bool(
+            self.license_evidence_refs
+        )
+        if self.license_status is LicenseReviewStatus.UNKNOWN and license_values_present:
+            raise ValueError("unknown license status cannot carry license identifier/evidence")
+        if self.license_status in {
+            LicenseReviewStatus.VERIFIED,
+            LicenseReviewStatus.INCOMPATIBLE,
+        } and (not self.license_identifier or not self.license_evidence_refs):
+            raise ValueError(
+                "verified/incompatible license status requires identifier and evidence"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "license_evidence_refs": list(self.license_evidence_refs),
+            "license_identifier": self.license_identifier,
+            "license_status": self.license_status.value,
+            "source_evidence_refs": list(self.source_evidence_refs),
+            "source_url": self.source_url,
+            "source_url_status": self.source_url_status.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionMetadataV1:
+    """Optional acquisition facts; local registration invents none."""
+
+    status: MetadataAvailability = MetadataAvailability.UNKNOWN
+    acquired_from: str | None = None
+    acquired_at_utc: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, MetadataAvailability):
+            raise ValueError("acquisition status must be MetadataAvailability")
+        if self.status is MetadataAvailability.UNKNOWN and (
+            self.acquired_from is not None or self.acquired_at_utc is not None
+        ):
+            raise ValueError("unknown acquisition status cannot carry acquisition values")
+        if self.status is MetadataAvailability.PROVIDED and (
+            self.acquired_from is None and self.acquired_at_utc is None
+        ):
+            raise ValueError("provided acquisition status requires an explicit value")
+        if self.acquired_from == "" or self.acquired_at_utc == "":
+            raise ValueError("acquisition metadata values must be non-empty when provided")
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "acquired_at_utc": self.acquired_at_utc,
+            "acquired_from": self.acquired_from,
+            "status": self.status.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class IngestionAuditMetadataV1:
+    """Optional ingestion/tool audit facts, with no generated timestamp by default."""
+
+    status: MetadataAvailability = MetadataAvailability.UNKNOWN
+    ingested_at_utc: str | None = None
+    registration_tool_identity: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, MetadataAvailability):
+            raise ValueError("ingestion status must be MetadataAvailability")
+        if self.status is MetadataAvailability.UNKNOWN and (
+            self.ingested_at_utc is not None or self.registration_tool_identity is not None
+        ):
+            raise ValueError("unknown ingestion status cannot carry ingestion audit values")
+        if self.status is MetadataAvailability.PROVIDED and (
+            self.ingested_at_utc is None and self.registration_tool_identity is None
+        ):
+            raise ValueError("provided ingestion status requires an explicit value")
+        if self.ingested_at_utc == "" or self.registration_tool_identity == "":
+            raise ValueError("ingestion audit values must be non-empty when provided")
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "ingested_at_utc": self.ingested_at_utc,
+            "registration_tool_identity": self.registration_tool_identity,
+            "status": self.status.value,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class SourceArchiveRecordV1:
     """Portable compressed-byte identity plus separate local path provenance."""
 
-    record_contract_id: str
+    source_archive_record_schema_id: str
+    provider: str
     provider_namespace: str
     source_archive_id_contract_id: str
     source_archive_id: str
     compressed_sha256: str
     compressed_size_bytes: int
-    original_basename: str
+    original_filename: str
     filename_contract_id: str
     inventory_contract_id: str
     filename_result: FilenameParseResult
+    source_metadata: SourceArchiveMetadataV1
+    acquisition_metadata: AcquisitionMetadataV1
+    ingestion_audit_metadata: IngestionAuditMetadataV1
     raw_root: Path
     relative_path: PurePosixPath
     registration_status: RegistrationStatus
@@ -109,10 +248,18 @@ class SourceArchiveRecordV1:
             raise ValueError("source_archive_id must be 64 lowercase hexadecimal characters")
         if self.compressed_size_bytes < 0:
             raise ValueError("compressed_size_bytes must be non-negative")
-        if self.filename_result.original_basename != self.original_basename:
-            raise ValueError("filename result basename must match original_basename")
+        if self.filename_result.original_basename != self.original_filename:
+            raise ValueError("filename result basename must match original_filename")
+        if self.provider != PROVIDER:
+            raise ValueError("unsupported source provider")
         if self.provider_namespace == "":
             raise ValueError("provider_namespace must be non-empty")
+        if not isinstance(self.source_metadata, SourceArchiveMetadataV1):
+            raise ValueError("source_metadata must be SourceArchiveMetadataV1")
+        if not isinstance(self.acquisition_metadata, AcquisitionMetadataV1):
+            raise ValueError("acquisition_metadata must be AcquisitionMetadataV1")
+        if not isinstance(self.ingestion_audit_metadata, IngestionAuditMetadataV1):
+            raise ValueError("ingestion_audit_metadata must be IngestionAuditMetadataV1")
         if self.filename_contract_id != self.filename_result.contract_id:
             raise ValueError("filename_contract_id disagrees with filename result")
         if self.source_archive_id != derive_source_archive_id(
@@ -120,8 +267,8 @@ class SourceArchiveRecordV1:
             provider_namespace=self.provider_namespace,
         ):
             raise ValueError("source_archive_id disagrees with its derivation contract")
-        if self.record_contract_id != SOURCE_ARCHIVE_RECORD_CONTRACT_ID:
-            raise ValueError("unsupported source archive record contract")
+        if self.source_archive_record_schema_id != SOURCE_ARCHIVE_RECORD_SCHEMA_ID:
+            raise ValueError("unsupported source archive record schema")
         if self.source_archive_id_contract_id != SOURCE_ARCHIVE_ID_CONTRACT_ID:
             raise ValueError("unsupported source archive ID contract")
         if self.inventory_contract_id != INVENTORY_CONTRACT_ID:
@@ -160,12 +307,51 @@ class SourceArchiveRecordV1:
             "filename_classification": _filename_result_to_dict(self.filename_result),
             "filename_contract_id": self.filename_contract_id,
             "inventory_contract_id": self.inventory_contract_id,
-            "original_basename": self.original_basename,
+            "license_evidence_refs": list(self.source_metadata.license_evidence_refs),
+            "license_identifier": self.source_metadata.license_identifier,
+            "license_status": self.source_metadata.license_status.value,
+            "original_filename": self.original_filename,
+            "provider": self.provider,
             "provider_namespace": self.provider_namespace,
-            "record_contract_id": self.record_contract_id,
             "registration_status": self.registration_status.value,
+            "source_archive_record_schema_id": self.source_archive_record_schema_id,
             "source_archive_id": self.source_archive_id,
             "source_archive_id_contract_id": self.source_archive_id_contract_id,
+            "source_evidence_refs": list(self.source_metadata.source_evidence_refs),
+            "source_url": self.source_metadata.source_url,
+            "source_url_status": self.source_metadata.source_url_status.value,
+        }
+
+    @property
+    def license_status(self) -> LicenseReviewStatus:
+        return self.source_metadata.license_status
+
+    @property
+    def source_url(self) -> str | None:
+        return self.source_metadata.source_url
+
+    @property
+    def source_url_status(self) -> MetadataAvailability:
+        return self.source_metadata.source_url_status
+
+    @property
+    def source_evidence_refs(self) -> tuple[str, ...]:
+        return self.source_metadata.source_evidence_refs
+
+    @property
+    def license_identifier(self) -> str | None:
+        return self.source_metadata.license_identifier
+
+    @property
+    def license_evidence_refs(self) -> tuple[str, ...]:
+        return self.source_metadata.license_evidence_refs
+
+    @property
+    def audit_projection(self) -> dict[str, dict[str, str | None]]:
+        """Return optional acquisition/ingestion audit fields, without inventing values."""
+        return {
+            "acquisition_metadata": self.acquisition_metadata.to_dict(),
+            "ingestion_audit_metadata": self.ingestion_audit_metadata.to_dict(),
         }
 
     @property
@@ -180,6 +366,7 @@ class SourceArchiveRecordV1:
     def to_dict(self) -> dict[str, object]:
         """Serialize portable record data separately from local path provenance."""
         return {
+            "audit_metadata": self.audit_projection,
             "portable_semantic": self.portable_projection,
             "runtime_local": self.runtime_local_projection,
         }
@@ -231,7 +418,7 @@ class ArchiveRegistrationResult:
     """Complete deterministic result for registering one inventory."""
 
     registration_contract_id: str
-    record_contract_id: str
+    source_archive_record_schema_id: str
     source_archive_id_contract_id: str
     provider_namespace: str
     inventory_contract_id: str
@@ -259,10 +446,10 @@ class ArchiveRegistrationResult:
             ],
             "inventory_contract_id": self.inventory_contract_id,
             "provider_namespace": self.provider_namespace,
-            "record_contract_id": self.record_contract_id,
             "records": [record.to_dict() for record in self.records],
             "registered_archive_count": self.registered_archive_count,
             "registration_contract_id": self.registration_contract_id,
+            "source_archive_record_schema_id": self.source_archive_record_schema_id,
             "source_archive_id_contract_id": self.source_archive_id_contract_id,
             "total_compressed_bytes": self.total_compressed_bytes,
             "unique_source_archive_id_count": self.unique_source_archive_id_count,
@@ -513,7 +700,7 @@ def _filename_result_to_dict(result: FilenameParseResult) -> dict[str, object]:
             "disposition": "recognized",
             "expansion_token": result.expansion_token,
             "format_token": result.format_token,
-            "original_basename": result.original_basename,
+            "original_filename": result.original_basename,
             "source_kind": result.source_kind.value,
         }
     if isinstance(result, UnrecognizedSourceFilename):
@@ -521,7 +708,7 @@ def _filename_result_to_dict(result: FilenameParseResult) -> dict[str, object]:
             "contract_id": result.contract_id,
             "diagnostic_code": result.diagnostic_code.value,
             "disposition": "unrecognized",
-            "original_basename": result.original_basename,
+            "original_filename": result.original_basename,
             "reason": result.reason,
         }
     raise RegistrationConfigurationError("inventory item has an unsupported filename result type")
@@ -533,9 +720,13 @@ def _make_record(
     provider_namespace: str,
     compressed_sha256: str,
     compressed_size_bytes: int,
+    source_metadata: SourceArchiveMetadataV1 | None,
+    acquisition_metadata: AcquisitionMetadataV1 | None,
+    ingestion_audit_metadata: IngestionAuditMetadataV1 | None,
 ) -> SourceArchiveRecordV1:
     return SourceArchiveRecordV1(
-        record_contract_id=SOURCE_ARCHIVE_RECORD_CONTRACT_ID,
+        source_archive_record_schema_id=SOURCE_ARCHIVE_RECORD_SCHEMA_ID,
+        provider=PROVIDER,
         provider_namespace=provider_namespace,
         source_archive_id_contract_id=SOURCE_ARCHIVE_ID_CONTRACT_ID,
         source_archive_id=derive_source_archive_id(
@@ -544,10 +735,13 @@ def _make_record(
         ),
         compressed_sha256=compressed_sha256,
         compressed_size_bytes=compressed_size_bytes,
-        original_basename=item.basename,
+        original_filename=item.basename,
         filename_contract_id=item.filename_result.contract_id,
         inventory_contract_id=INVENTORY_CONTRACT_ID,
         filename_result=item.filename_result,
+        source_metadata=source_metadata or SourceArchiveMetadataV1(),
+        acquisition_metadata=acquisition_metadata or AcquisitionMetadataV1(),
+        ingestion_audit_metadata=ingestion_audit_metadata or IngestionAuditMetadataV1(),
         raw_root=item.raw_root,
         relative_path=item.relative_path,
         registration_status=RegistrationStatus.REGISTERED,
@@ -559,6 +753,9 @@ def register_archive(
     *,
     provider_namespace: str = PROVIDER_NAMESPACE,
     chunk_size_bytes: int = HASH_CHUNK_SIZE_BYTES,
+    source_metadata: SourceArchiveMetadataV1 | None = None,
+    acquisition_metadata: AcquisitionMetadataV1 | None = None,
+    ingestion_audit_metadata: IngestionAuditMetadataV1 | None = None,
 ) -> SourceArchiveRecordV1:
     """Register one M2.2 candidate by streaming its exact compressed bytes."""
     if chunk_size_bytes <= 0:
@@ -604,6 +801,9 @@ def register_archive(
         provider_namespace=provider_namespace,
         compressed_sha256=digest.hexdigest(),
         compressed_size_bytes=byte_count,
+        source_metadata=source_metadata,
+        acquisition_metadata=acquisition_metadata,
+        ingestion_audit_metadata=ingestion_audit_metadata,
     )
 
 
@@ -674,7 +874,7 @@ def register_inventory_archives(
     ordered_records = tuple(records)
     result = ArchiveRegistrationResult(
         registration_contract_id=ARCHIVE_REGISTRATION_CONTRACT_ID,
-        record_contract_id=SOURCE_ARCHIVE_RECORD_CONTRACT_ID,
+        source_archive_record_schema_id=SOURCE_ARCHIVE_RECORD_SCHEMA_ID,
         source_archive_id_contract_id=SOURCE_ARCHIVE_ID_CONTRACT_ID,
         provider_namespace=provider_namespace,
         inventory_contract_id=inventory.contract_id,
