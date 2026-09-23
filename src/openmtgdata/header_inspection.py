@@ -9,6 +9,7 @@ import json
 import zlib
 from collections import Counter, defaultdict
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -43,6 +44,20 @@ MAX_HEADER_FIELDS = 4096
 MAX_HEADER_FIELD_CHARS = 1024 * 1024
 _LINE_READ_CHUNK_BYTES = 8192
 _CSV_LIMIT_LOCK = Lock()
+
+
+@contextmanager
+def csv_field_limit(max_field_chars: int) -> Iterator[None]:
+    """Temporarily set stdlib CSV's process-global field limit under a lock."""
+    if max_field_chars <= 0:
+        raise ValueError("CSV field limit must be positive")
+    with _CSV_LIMIT_LOCK:
+        previous_limit = csv.field_size_limit()
+        csv.field_size_limit(max_field_chars)
+        try:
+            yield
+        finally:
+            csv.field_size_limit(previous_limit)
 
 
 class HeaderInspectionExecutionError(RuntimeError):
@@ -403,6 +418,17 @@ class _BoundedPhysicalLines(Iterator[str]):
     def __iter__(self) -> _BoundedPhysicalLines:
         return self
 
+    def begin_next_record(self) -> None:
+        """Reset per-record safety/evidence counters after csv.reader returned a record."""
+        self._header_bytes = 0
+        self._header_chars = 0
+        self._line_endings.clear()
+        self._inside_quotes = False
+        self._at_field_start = True
+        self._field_count = 1
+        self.quote_character_observed = False
+        self.doubled_quote_observed = False
+
     def __next__(self) -> str:
         while True:
             terminator = self._terminator_index(self._buffer, eof=self._eof)
@@ -591,9 +617,7 @@ def _parse_header(
     max_header_field_chars: int,
 ) -> HeaderEvidenceV1:
     lines = _BoundedPhysicalLines(stream, max_header_bytes, max_header_fields)
-    with _CSV_LIMIT_LOCK:
-        previous_limit = csv.field_size_limit()
-        csv.field_size_limit(max_header_field_chars)
+    with csv_field_limit(max_header_field_chars):
         try:
             reader = csv.reader(
                 lines,
@@ -625,8 +649,8 @@ def _parse_header(
                 raise HeaderInspectionError(
                     code, "first CSV record is not parseable under v1"
                 ) from exc
-        finally:
-            csv.field_size_limit(previous_limit)
+        except HeaderInspectionError:
+            raise
 
     if not fields or (len(fields) == 1 and fields[0] == ""):
         raise HeaderInspectionError(
