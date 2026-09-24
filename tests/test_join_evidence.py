@@ -12,6 +12,7 @@ from openmtgdata.join_evidence import (
     JoinEvidenceError,
     JoinFieldEvidenceV1,
     JoinFieldReferenceV1,
+    JoinReportDecisionStatus,
     build_join_evidence_report,
     candidate_evidence,
     compare_candidate_cardinality,
@@ -276,6 +277,65 @@ def test_report_rejects_malformed_source_or_schema_identity() -> None:
     }
     with pytest.raises(JoinEvidenceError, match="malformed source or schema"):
         build_join_evidence_report(**{**values, "game_source_archive_id": "wrong"})
+
+    for field, value in (
+        ("replay_mapping_id", "banana"),
+        ("game_mapping_id", "openmtgdata.game-field-mapping.v1:" + "G" * 64),
+        ("replay_source_interpretation_contract_id", "openmtgdata.source-interpretation.v1:xyz"),
+        (
+            "game_source_interpretation_contract_id",
+            "openmtgdata.source-interpretation.v1:" + "z" * 64,
+        ),
+    ):
+        with pytest.raises(JoinEvidenceError):
+            build_join_evidence_report(**{**values, field: value})
+
+
+def test_report_level_decision_is_scoped_and_digest_bound() -> None:
+    candidate = _candidate()
+    replay = _stats(SourceKind.REPLAY, [("k", "0"), ("k", "0")])
+    game = _stats(SourceKind.GAME, [("k", "0"), ("k", "0"), ("k", "0")])
+    values = {
+        "semantic_source_catalog_digest": "a" * 64,
+        "m3_evidence_digest": "b" * 64,
+        "schema_registry_digest": "c" * 64,
+        "replay_mapping_id": "openmtgdata.replay-field-mapping.v1:" + "d" * 64,
+        "replay_mapping_registry_digest": "e" * 64,
+        "game_mapping_id": "openmtgdata.game-field-mapping.v1:" + "f" * 64,
+        "game_mapping_registry_digest": "1" * 64,
+        "replay_source_interpretation_contract_id": "openmtgdata.source-interpretation.v1:"
+        + "6" * 64,
+        "game_source_interpretation_contract_id": "openmtgdata.source-interpretation.v1:"
+        + "7" * 64,
+        "replay_source_archive_id": "2" * 64,
+        "game_source_archive_id": "3" * 64,
+        "replay_raw_schema_fingerprint": "4" * 64,
+        "game_raw_schema_fingerprint": "5" * 64,
+        "candidate_field_inventory": (),
+        "candidate_results": (candidate_evidence(candidate, replay, game),),
+        "replay_m5_rejection_counts": (),
+        "reciprocal_game_row_evidence": {},
+        "game_number_game_index_relation": {},
+    }
+    report = build_join_evidence_report(**values)
+    assert report.overall_decision.status is JoinReportDecisionStatus.JOIN_UNSUPPORTED
+    assert report.overall_decision.approved_candidate_id is None
+    validate_join_evidence_report(report)
+
+    incomplete = build_join_evidence_report(
+        **{**values, "replay_m4_completion_status": "incomplete"}
+    )
+    assert incomplete.overall_decision.status is JoinReportDecisionStatus.ANALYSIS_INCOMPLETE
+    assert incomplete.report_digest != report.report_digest
+    no_candidates = build_join_evidence_report(**{**values, "candidate_results": ()})
+    assert no_candidates.overall_decision.status is JoinReportDecisionStatus.ANALYSIS_INCOMPLETE
+
+    altered = replace(report, report_digest="8" * 64)
+    with pytest.raises(JoinEvidenceError, match="semantic digest"):
+        validate_join_evidence_report(altered)
+    malformed = replace(report, report_digest="x" * 40)
+    with pytest.raises(JoinEvidenceError, match="digest is malformed"):
+        validate_join_evidence_report(malformed)
 
 
 def test_n_to_n_is_ambiguous_and_never_authorized_by_coverage() -> None:

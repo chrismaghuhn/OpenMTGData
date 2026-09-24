@@ -17,9 +17,13 @@ JOIN_FIELD_REFERENCE_CONTRACT_ID = "openmtgdata.join-field-reference.v1"
 JOIN_SIDE_STATS_CONTRACT_ID = "openmtgdata.join-candidate-side-stats.v1"
 JOIN_CARDINALITY_CONTRACT_ID = "openmtgdata.join-cardinality-stats.v1"
 JOIN_DECISION_CONTRACT_ID = "openmtgdata.join-evidence-decision.v1"
+JOIN_REPORT_DECISION_CONTRACT_ID = "openmtgdata.join-evidence-report-decision.v1"
 JOIN_REPORT_DIGEST_CONTRACT_ID = "openmtgdata.join-evidence-report-digest.v1"
 EXACT_STRING_COMPARISON_CONTRACT_ID = "openmtgdata.exact-m4-csv-string-comparison.v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_REPLAY_MAPPING_ID = re.compile(r"openmtgdata\.replay-field-mapping\.v1:[0-9a-f]{64}\Z")
+_GAME_MAPPING_ID = re.compile(r"openmtgdata\.game-field-mapping\.v1:[0-9a-f]{64}\Z")
+_INTERPRETATION_ID = re.compile(r"openmtgdata\.source-interpretation\.v1:[0-9a-f]{64}\Z")
 _CANONICAL_INT = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 
 
@@ -32,6 +36,12 @@ class JoinDecision(StrEnum):
     PARTIAL_UNAMBIGUOUS_COVERAGE = "partial_unambiguous_coverage"
     AMBIGUOUS = "ambiguous"
     UNSUPPORTED = "unsupported"
+
+
+class JoinReportDecisionStatus(StrEnum):
+    SUPPORTED_SCOPED_JOIN = "supported_scoped_join"
+    JOIN_UNSUPPORTED = "join_unsupported"
+    ANALYSIS_INCOMPLETE = "analysis_incomplete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +246,23 @@ class JoinEvidenceDecisionV1:
 
 
 @dataclass(frozen=True, slots=True)
+class JoinEvidenceReportDecisionV1:
+    status: JoinReportDecisionStatus
+    approved_candidate_id: str | None
+    reason: str
+    scope: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "approved_candidate_id": self.approved_candidate_id,
+            "decision_contract_id": JOIN_REPORT_DECISION_CONTRACT_ID,
+            "reason": self.reason,
+            "scope": self.scope,
+            "status": self.status.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class JoinCandidateEvidenceV1:
     candidate: JoinCandidateV1
     replay_stats: JoinCandidateSideStatsV1
@@ -270,6 +297,9 @@ class JoinEvidenceReportV1:
     game_raw_schema_fingerprint: str
     m4_reader_contract_id: str
     evidence_scope: str
+    replay_m4_completion_status: str
+    game_m4_completion_status: str
+    overall_decision: JoinEvidenceReportDecisionV1
     candidate_field_inventory: tuple[JoinFieldEvidenceV1, ...]
     candidate_results: tuple[JoinCandidateEvidenceV1, ...]
     replay_m5_rejection_counts: tuple[tuple[str, int], ...]
@@ -284,6 +314,7 @@ class JoinEvidenceReportV1:
             ],
             "candidate_results": [item.to_dict() for item in self.candidate_results],
             "evidence_scope": self.evidence_scope,
+            "game_m4_completion_status": self.game_m4_completion_status,
             "game_mapping_id": self.game_mapping_id,
             "game_mapping_registry_digest": self.game_mapping_registry_digest,
             "game_raw_schema_fingerprint": self.game_raw_schema_fingerprint,
@@ -295,6 +326,7 @@ class JoinEvidenceReportV1:
             "reciprocal_game_row_evidence": self.reciprocal_game_row_evidence,
             "replay_mapping_id": self.replay_mapping_id,
             "replay_mapping_registry_digest": self.replay_mapping_registry_digest,
+            "replay_m4_completion_status": self.replay_m4_completion_status,
             "replay_raw_schema_fingerprint": self.replay_raw_schema_fingerprint,
             "replay_source_archive_id": self.replay_source_archive_id,
             "replay_source_interpretation_contract_id": (
@@ -302,6 +334,7 @@ class JoinEvidenceReportV1:
             ),
             "report_contract_id": JOIN_EVIDENCE_REPORT_CONTRACT_ID,
             "schema_registry_digest": self.schema_registry_digest,
+            "overall_decision": self.overall_decision.to_dict(),
             "semantic_source_catalog_digest": self.semantic_source_catalog_digest,
             "replay_m5_rejection_counts": dict(self.replay_m5_rejection_counts),
         }
@@ -742,6 +775,8 @@ def build_join_evidence_report(
     replay_m5_rejection_counts: tuple[tuple[str, int], ...],
     reciprocal_game_row_evidence: dict[str, object],
     game_number_game_index_relation: dict[str, object],
+    replay_m4_completion_status: str = "complete",
+    game_m4_completion_status: str = "complete",
 ) -> JoinEvidenceReportV1:
     digest_bindings = (
         semantic_source_catalog_digest,
@@ -756,10 +791,14 @@ def build_join_evidence_report(
     )
     if any(_SHA256.fullmatch(value) is None for value in digest_bindings):
         raise JoinEvidenceError("M6.1 report contains malformed source or schema identities")
-    if not replay_source_interpretation_contract_id.startswith(
-        "openmtgdata.source-interpretation.v1:"
-    ) or not game_source_interpretation_contract_id.startswith(
-        "openmtgdata.source-interpretation.v1:"
+    if (
+        _REPLAY_MAPPING_ID.fullmatch(replay_mapping_id) is None
+        or _GAME_MAPPING_ID.fullmatch(game_mapping_id) is None
+    ):
+        raise JoinEvidenceError("M6.1 report has malformed M5 mapping identities")
+    if (
+        _INTERPRETATION_ID.fullmatch(replay_source_interpretation_contract_id) is None
+        or _INTERPRETATION_ID.fullmatch(game_source_interpretation_contract_id) is None
     ):
         raise JoinEvidenceError("M6.1 report has malformed source interpretation bindings")
     candidate_ids = [item.candidate.candidate_id for item in candidate_results]
@@ -790,6 +829,49 @@ def build_join_evidence_report(
         candidate_results[0].replay_stats.m5_rejected_rows
     ):
         raise JoinEvidenceError("M6.1 Replay M5 diagnostic counts do not reconcile")
+    ordered_results = tuple(sorted(candidate_results, key=lambda item: item.candidate.candidate_id))
+    scope = "AFR PremierDraft reviewed archive pair and declared candidate inventory"
+    approved = [
+        item
+        for item in ordered_results
+        if item.decision.status is JoinDecision.SUPPORTED_SCOPED_JOIN_KEY
+    ]
+    if replay_m4_completion_status != "complete" or game_m4_completion_status != "complete":
+        overall = JoinEvidenceReportDecisionV1(
+            JoinReportDecisionStatus.ANALYSIS_INCOMPLETE,
+            None,
+            (
+                "Both M4-v2 streams must complete terminal verification before "
+                "join authority can be decided."
+            ),
+            scope,
+        )
+    elif not ordered_results:
+        overall = JoinEvidenceReportDecisionV1(
+            JoinReportDecisionStatus.ANALYSIS_INCOMPLETE,
+            None,
+            "No candidate definitions were evaluated; join authority remains undetermined.",
+            scope,
+        )
+    elif len(approved) == 1:
+        overall = JoinEvidenceReportDecisionV1(
+            JoinReportDecisionStatus.SUPPORTED_SCOPED_JOIN,
+            approved[0].candidate.candidate_id,
+            "Exactly one declared candidate has an approved scoped decision.",
+            scope,
+        )
+    elif approved:
+        raise JoinEvidenceError("multiple candidates cannot be approved as overall join authority")
+    else:
+        overall = JoinEvidenceReportDecisionV1(
+            JoinReportDecisionStatus.JOIN_UNSUPPORTED,
+            None,
+            (
+                "All declared candidates were evaluated; none establishes an "
+                "authoritative row key in scope."
+            ),
+            scope,
+        )
     provisional = JoinEvidenceReportV1(
         semantic_source_catalog_digest,
         m3_evidence_digest,
@@ -806,6 +888,9 @@ def build_join_evidence_report(
         game_raw_schema_fingerprint,
         "openmtgdata.raw-source-reader.v2",
         "AFR PremierDraft archive-pair M4-accepted source rows only; no joined rows emitted",
+        replay_m4_completion_status,
+        game_m4_completion_status,
+        overall,
         tuple(
             sorted(
                 candidate_field_inventory,
@@ -816,7 +901,7 @@ def build_join_evidence_report(
                 ),
             )
         ),
-        tuple(sorted(candidate_results, key=lambda item: item.candidate.candidate_id)),
+        ordered_results,
         tuple(sorted(replay_m5_rejection_counts)),
         reciprocal_game_row_evidence,
         game_number_game_index_relation,
@@ -831,5 +916,7 @@ def build_join_evidence_report(
 def validate_join_evidence_report(report: JoinEvidenceReportV1) -> None:
     if report.m4_reader_contract_id != "openmtgdata.raw-source-reader.v2":
         raise JoinEvidenceError("M6.1 report does not bind M4 reader v2")
+    if _SHA256.fullmatch(report.report_digest) is None:
+        raise JoinEvidenceError("M6.1 report digest is malformed")
     if report.report_digest != report_digest(report.semantic_projection_dict()):
         raise JoinEvidenceError("M6.1 report semantic digest mismatch")
