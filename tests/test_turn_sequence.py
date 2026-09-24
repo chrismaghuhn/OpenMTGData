@@ -653,7 +653,8 @@ def test_local_turn_sequence_shards_serialize_each_sequence_once(tmp_path) -> No
     writer.close()
     assert writer.sequences_written == 2
     assert writer.frames_written == 5
-    assert len(writer.shards) == 2
+    assert writer.shard_count == 2
+    assert not hasattr(writer, "shards")
     documents = []
     for shard in sorted(shard_dir.glob("*.jsonl.gz")):
         with gzip.open(shard, "rt", encoding="utf-8") as stream:

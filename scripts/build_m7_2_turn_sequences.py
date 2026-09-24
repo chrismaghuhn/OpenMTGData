@@ -75,12 +75,13 @@ class _SequenceShardWriter:
         self._raw: BinaryIO | None = None
         self._gzip: gzip.GzipFile | None = None
         self._current_path: Path | None = None
-        self.shards: list[dict[str, object]] = []
+        self.shard_count = 0
         self.sequences_written = 0
         self.frames_written = 0
 
     def _open_shard(self) -> None:
         self.shard_ordinal += 1
+        self.shard_count += 1
         self.shard_sequence_count = 0
         self.shard_frame_count = 0
         self._current_path = self.staging_directory / f"part-{self.shard_ordinal:05d}.jsonl.gz"
@@ -109,15 +110,6 @@ class _SequenceShardWriter:
         self._raw.flush()
         os.fsync(self._raw.fileno())
         self._raw.close()
-        self.shards.append(
-            {
-                "shard_ordinal": self.shard_ordinal,
-                "filename": self._current_path.name,
-                "sequences": self.shard_sequence_count,
-                "frames": self.shard_frame_count,
-                "compressed_size_bytes": self._current_path.stat().st_size,
-            }
-        )
         self._gzip = None
         self._raw = None
         self._current_path = None
@@ -323,8 +315,7 @@ def main() -> int:
             "compression": "gzip",
             "gzip_mtime": 0,
             "shard_sequence_limit": args.sequences_per_shard,
-            "shards": shard_writer.shards,
-            "shard_count": len(shard_writer.shards),
+            "shard_count": shard_writer.shard_count,
             "sequences_written": shard_writer.sequences_written,
             "frames_written": shard_writer.frames_written,
         }
@@ -357,7 +348,7 @@ def main() -> int:
                 "logical_sequence_digest": build_report.logical_sequence_digest,
                 "build_report_digest": build_report.report_digest,
                 "output_directory": str(output_directory),
-                "shard_count": len(shard_writer.shards),
+                "shard_count": shard_writer.shard_count,
             },
             sort_keys=True,
         )
