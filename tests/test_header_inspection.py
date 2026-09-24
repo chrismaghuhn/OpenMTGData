@@ -281,7 +281,8 @@ def test_scanner_does_not_interpret_data_rows_or_infer_types(tmp_path: Path) -> 
     assert inspection.header_evidence.ordered_fields == ("a", "b")
     assert "FIRST_DATA_ROW" not in serialized
     assert "SECOND_DATA_ROW" not in serialized
-    assert "123" not in serialized
+    # Search for a serialized value, not this digit substring inside a SHA-256 digest.
+    assert '"123"' not in serialized
     assert inspection.type_evidence is None
     assert inspection.nullability_evidence is None
 
