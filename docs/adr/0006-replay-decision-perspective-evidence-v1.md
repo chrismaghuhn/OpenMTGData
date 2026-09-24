@@ -8,7 +8,7 @@ M7.1 is Replay-only. M6.1's report-level conclusion is `join_unsupported` for th
 
 The reviewed Replay archive is `b739dacc3082d356b27001aa6fd91257ae766a8d1aec23272e656610cfe3b54b`, compressed SHA-256 `43aad0b42b6c9bb4af6431e8e1910da6a324d63a87f7cbc6d37057355cb0fccc`, compressed size 139,185,860 bytes. It is bound to raw fingerprint `b4ad0cb27197cf3e37e59d6609a6098da0e0e2f6c4f98b82c45f85fcb7bbea75`, M3.2 contract `openmtgdata.source-interpretation.v1:d93900da88eba55049b3fa80e8c909522201fb05f300e4765dcf814763b06d13`, M5.1 mapping `openmtgdata.replay-field-mapping.v1:a42f925293705fb89936e3b3b5a6d243027d63953808ccfb154920c0a6031140`, M5.1 registry digest `43be7080894b55c60f58d569ed8cfeb52a9dbae1fa8688160d91196044ab47f3`, and M4 reader `openmtgdata.raw-source-reader.v2`. The report also binds source catalog `dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602`, corrected M3.1 evidence `c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29`, and corrected M3.2 registry `66d58e20fa2adbcbfdcfd927c1074b5807d43af8af94103b61b26fc06f13661c`.
 
-The deterministic M7.1 report digest is `420aa328eefe947b6b18cbf06fc8f28d47db8529d3f6cfc681332b8ae5d07e76`. It covers the exact physical field inventory, bounded M4 shape/co-occurrence measurements, candidate dispositions, perspective findings, redacted locators/turn slots, and limitations. The separate field matrix and annotated examples repeat these bindings. Local artifacts are ignored under `data/intermediate/m7.1/`.
+The deterministic M7.1 report digest is `be2d6ca4b109d1f69d1034ea107e935e37d9a5d78c6aa0bd9518f4bdbf166c59`. It covers the exact physical field inventory, bounded M4 shape/co-occurrence measurements, candidate dispositions, perspective findings, redacted locators/turn slots, and limitations. The separate field matrix and annotated examples repeat these bindings. Local artifacts are ignored under `data/intermediate/m7.1/`.
 
 ## Population and evidence scopes
 
@@ -88,7 +88,7 @@ Current perspective status is `actor_unknown`; `SELF`/`OPPONENT` transformation 
 
 ## Decision-type disposition and result
 
-All 21 activity candidates remain `unsupported_action_structure`; none has an approved atomic action identity or decision boundary. Actor status is unknown, before-state is turn-aggregate-only, visibility is unknown, targets are unsupported, and same-slot order is unestablished. The pipe character seen in values is not parsed. No field is both a policy input and an action label.
+All 21 activity candidates remain `unsupported_action_structure`; none has an approved atomic action identity or decision boundary. Actor status is unknown, before-state is turn-aggregate-only, visibility is unknown, targets are unsupported, and same-slot order is unestablished. The pipe character seen in values is not parsed. No field is both a policy input and an action label. A future `PARTIAL` disposition still requires a source-backed observed-action lexeme, supported decision boundary, and supported actor; it may then describe incomplete before-state or visibility while remaining ineligible for BC use.
 
 The report-level result is `turn_summary_only`. A turn-summary record is observed, but a source-backed human behavior label is not established (`observed_behavior_supported = false`). No safe before-state, decision actor, target, or policy-input allowlist is supported. Therefore M7.2 action-level `DecisionSampleV1` extraction cannot proceed for this slice, and a first behavior-cloning training smoke is not justified. This does not say Replay is unusable for future research; it says these data do not yet prove an action-level imitation sample.
 
@@ -96,7 +96,7 @@ The report accounts separately for M4's 24,668 width-rejected rows and M5.1's 13
 
 ## Future safety invariants
 
-1. No future-turn slot may enter a candidate decision's input.
+1. Convert per-side slot position to M5.1 chronology before leakage checks: `ordinal = 2 * (slot_index - 1) + side_offset`, where `side_offset` is zero for the `on_play`-selected first source side and one for the other side. A slot with ordinal greater than the candidate event ordinal is future and must be rejected. Equal ordinal is still unsafe unless pre-action timing is established.
 2. No same-slot aggregate or end-of-turn value may enter an intra-turn input without exact pre-action temporal evidence.
 3. Outcome/post-decision fields remain isolated from policy inputs.
 4. A source-private field can be used only when the decision actor is proven to be that same source side at that sample; source `user` is not unconditionally `SELF`.

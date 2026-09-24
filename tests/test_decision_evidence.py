@@ -28,6 +28,7 @@ from openmtgdata.decision_evidence import (
     decision_report_digest,
     decision_report_with_digest,
     derive_overall_status,
+    source_turn_event_ordinal,
     validate_decision_report,
     validate_perspective_swap_requirement,
     validate_policy_field_for_decision,
@@ -156,16 +157,16 @@ def test_outcome_like_field_is_never_a_policy_input() -> None:
     assert won.leakage_status is LeakageStatus.GAME_OUTCOME
     assert won.policy_input_status is PolicyInputStatus.POST_DECISION_ONLY
     with pytest.raises(DecisionEvidenceError):
-        validate_policy_field_for_decision(won, candidate_turn_slot=1)
+        validate_policy_field_for_decision(won, candidate_event_ordinal=0)
 
 
 def test_future_turn_fields_cannot_become_predecision_inputs() -> None:
     future = _field("oppo_turn_3_lands_played", 70)
     assert future.turn_slot_index == 3
-    with pytest.raises(DecisionEvidenceError, match="current/future"):
-        validate_policy_field_for_decision(future, candidate_turn_slot=2)
+    with pytest.raises(DecisionEvidenceError, match="later chronological"):
+        validate_policy_field_for_decision(future, candidate_event_ordinal=2, source_on_play=True)
     with pytest.raises(DecisionEvidenceError, match="timing"):
-        validate_policy_field_for_decision(future, candidate_turn_slot=3)
+        validate_policy_field_for_decision(future, candidate_event_ordinal=5, source_on_play=True)
 
 
 def test_same_turn_and_end_of_turn_name_candidates_are_not_predecision_safe() -> None:
@@ -173,7 +174,35 @@ def test_same_turn_and_end_of_turn_name_candidates_are_not_predecision_safe() ->
     assert aggregate.timing_status is TimingStatus.WITHIN_TURN_UNKNOWN
     assert aggregate.end_of_turn_name_candidate_only
     with pytest.raises(DecisionEvidenceError):
-        validate_policy_field_for_decision(aggregate, candidate_turn_slot=2)
+        validate_policy_field_for_decision(
+            aggregate, candidate_event_ordinal=2, source_on_play=True
+        )
+
+
+def test_cross_side_future_order_uses_m5_event_ordinal_not_side_slot_index() -> None:
+    user_turn_two = _field("user_turn_2_lands_played", 20)
+    oppo_turn_two = _field("oppo_turn_2_lands_played", 80)
+
+    # on_play=1: user turn 2 is event 2, oppo turn 2 is event 3.
+    assert source_turn_event_ordinal(user_turn_two, source_on_play=True) == 2
+    assert source_turn_event_ordinal(oppo_turn_two, source_on_play=True) == 3
+    with pytest.raises(DecisionEvidenceError, match="later chronological"):
+        validate_policy_field_for_decision(
+            oppo_turn_two, candidate_event_ordinal=2, source_on_play=True
+        )
+    # The equal chronological position is not rejected as future, but timing still fails closed.
+    with pytest.raises(DecisionEvidenceError, match="timing"):
+        validate_policy_field_for_decision(
+            user_turn_two, candidate_event_ordinal=2, source_on_play=True
+        )
+
+    # on_play=0 reverses which source side occupies the earlier slot in each pair.
+    assert source_turn_event_ordinal(oppo_turn_two, source_on_play=False) == 2
+    assert source_turn_event_ordinal(user_turn_two, source_on_play=False) == 3
+    with pytest.raises(DecisionEvidenceError, match="later chronological"):
+        validate_policy_field_for_decision(
+            user_turn_two, candidate_event_ordinal=2, source_on_play=False
+        )
 
 
 def test_source_private_input_requires_matching_actor_side_for_each_sample() -> None:
@@ -188,12 +217,14 @@ def test_source_private_input_requires_matching_actor_side_for_each_sample() -> 
     with pytest.raises(DecisionEvidenceError, match="source-user input"):
         validate_policy_field_for_decision(
             source_user_hand,
-            candidate_turn_slot=1,
+            candidate_event_ordinal=0,
+            source_on_play=True,
             decision_actor_source_side="oppo",
         )
     validate_policy_field_for_decision(
         source_user_hand,
-        candidate_turn_slot=1,
+        candidate_event_ordinal=0,
+        source_on_play=True,
         decision_actor_source_side="user",
     )
 
@@ -329,6 +360,64 @@ def test_bounded_evidence_cannot_approve_a_full_decision_type() -> None:
         derive_overall_status((), turn_summary_observed=False)
         is OverallDecisionStatus.ANALYSIS_INCOMPLETE
     )
+
+
+def test_partial_requires_observed_action_boundary_and_supported_actor() -> None:
+    with pytest.raises(DecisionEvidenceError, match="source-backed action boundary"):
+        DecisionTypeEvidenceV1(
+            "partial_unknown_actor",
+            ("user_turn_N_cards_played",),
+            DecisionTypeDisposition.PARTIAL,
+            "turn-summary candidate string",
+            ReconstructionEvidenceLevel.UNSUPPORTED,
+            ActionStatus.ACTION_CANDIDATE,
+            "order unknown",
+            PerspectiveStatus.ACTOR_UNKNOWN,
+            "turn side is not actor",
+            VisibilityStatus.UNKNOWN_VISIBILITY,
+            BeforeStateStatus.NO_BEFORE_STATE,
+            TargetStatus.ACTION_TARGET_UNSUPPORTED,
+            LeakageStatus.TIMING_UNKNOWN,
+            (),
+            "bounded_prefix",
+            "Partial must still prove that an observed actor made an observed action.",
+        )
+
+    partial = DecisionTypeEvidenceV1(
+        "partial_action_actor_known",
+        ("oppo_turn_N_action_source_field",),
+        DecisionTypeDisposition.PARTIAL,
+        "source-direct action lexeme",
+        ReconstructionEvidenceLevel.SOURCE_DIRECT,
+        ActionStatus.DECISION_BOUNDARY_SUPPORTED,
+        "action boundary supported; before-state incomplete",
+        PerspectiveStatus.ACTOR_SOURCE_OPPO,
+        "source-side actor evidence only for this partial type",
+        VisibilityStatus.UNKNOWN_VISIBILITY,
+        BeforeStateStatus.PARTIAL_BEFORE_STATE,
+        TargetStatus.ACTION_TARGET_UNSUPPORTED,
+        LeakageStatus.TIMING_UNKNOWN,
+        (),
+        "bounded_prefix",
+        "An observed action/actor may be known while policy inputs remain unsafe.",
+    )
+    assert derive_overall_status((partial,), turn_summary_observed=True) is (
+        OverallDecisionStatus.PARTIAL_DECISION_EXTRACTION_SUPPORTED
+    )
+    base = _report()
+    partial_report = decision_report_with_digest(
+        replace(
+            base,
+            decision_types=(partial,),
+            overall_status=OverallDecisionStatus.PARTIAL_DECISION_EXTRACTION_SUPPORTED,
+            observed_behavior_supported=True,
+            can_build_safe_behavior_cloning_sample=False,
+            report_digest="",
+        )
+    )
+    validate_decision_report(partial_report)
+    assert partial_report.observed_behavior_supported
+    assert not partial_report.can_build_safe_behavior_cloning_sample
 
 
 def test_malformed_and_changed_digests_fail_closed() -> None:

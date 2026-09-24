@@ -229,9 +229,11 @@ def main() -> int:
         },
         "field_counts": field_counts,
         "future_slot_policy": (
-            "For a candidate decision at turn T, every slot N>T is FUTURE_TURN and fails "
-            "policy input validation. Same-slot fields are unsafe unless pre-action timing "
-            "is established."
+            "Convert the exact (source_side, per-side slot_index) to M5.1's zero-based "
+            "event_ordinal: 2*(slot_index-1) + 0 when source_side is the on_play-selected "
+            "first side, otherwise +1. Compare with the candidate event_ordinal; larger is "
+            "FUTURE_TURN and rejected. Equal ordinals still require established PRE_TURN or "
+            "TURN_START timing and safe visibility."
         ),
         "m6_boundary": {
             "status": "join_unsupported",

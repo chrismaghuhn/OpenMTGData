@@ -299,17 +299,30 @@ class DecisionTypeEvidenceV1:
     reason: str
 
     def __post_init__(self) -> None:
+        actor_is_supported = self.actor_status in {
+            PerspectiveStatus.ACTOR_SOURCE_USER,
+            PerspectiveStatus.ACTOR_SOURCE_OPPO,
+            PerspectiveStatus.ACTOR_DERIVABLE,
+        }
+        action_label_is_supported = (
+            self.observed_action_origin
+            in {
+                ReconstructionEvidenceLevel.SOURCE_DIRECT,
+                ReconstructionEvidenceLevel.DETERMINISTIC_WITHIN_SOURCE,
+            }
+            and self.action_structure_status is ActionStatus.DECISION_BOUNDARY_SUPPORTED
+            and actor_is_supported
+        )
+        if self.disposition is DecisionTypeDisposition.PARTIAL and not action_label_is_supported:
+            raise DecisionEvidenceError(
+                "partial evidence requires a source-backed action boundary and supported actor"
+            )
         if (
             self.disposition is DecisionTypeDisposition.SUPPORTED
             and self.evidence_scope != "m4-full-stream-verified"
         ):
             raise DecisionEvidenceError("full decision support requires full-stream evidence")
         if self.disposition is DecisionTypeDisposition.SUPPORTED:
-            actor_is_supported = self.actor_status in {
-                PerspectiveStatus.ACTOR_SOURCE_USER,
-                PerspectiveStatus.ACTOR_SOURCE_OPPO,
-                PerspectiveStatus.ACTOR_DERIVABLE,
-            }
             visibility_is_supported = (
                 self.visibility_status is VisibilityStatus.PUBLIC
                 or (
@@ -811,15 +824,13 @@ def validate_decision_report(report: DecisionEvidenceReportV1) -> None:
             if selected_field.leakage_status is not LeakageStatus.PRE_DECISION_SAFE:
                 raise DecisionEvidenceError("decision type references a temporally unsafe field")
     if report.observed_behavior_supported and not any(
-        item.disposition in {DecisionTypeDisposition.SUPPORTED, DecisionTypeDisposition.PARTIAL}
-        for item in report.decision_types
+        supports_observed_behavior(item) for item in report.decision_types
     ):
         raise DecisionEvidenceError(
             "report cannot support observed behavior without an approved type"
         )
     if report.observed_behavior_supported != any(
-        item.disposition in {DecisionTypeDisposition.SUPPORTED, DecisionTypeDisposition.PARTIAL}
-        for item in report.decision_types
+        supports_observed_behavior(item) for item in report.decision_types
     ):
         raise DecisionEvidenceError("observed behavior flag does not follow decision-type evidence")
     if report.can_build_safe_behavior_cloning_sample and not any(
@@ -907,6 +918,26 @@ def derive_overall_status(
     }:
         return OverallDecisionStatus.TURN_SUMMARY_ONLY
     return OverallDecisionStatus.UNSAFE_FOR_BEHAVIOR_CLONING
+
+
+def supports_observed_behavior(decision_type: DecisionTypeEvidenceV1) -> bool:
+    """Action identity/boundary and decision actor must be established for behavior labels."""
+    return (
+        decision_type.disposition
+        in {DecisionTypeDisposition.SUPPORTED, DecisionTypeDisposition.PARTIAL}
+        and decision_type.observed_action_origin
+        in {
+            ReconstructionEvidenceLevel.SOURCE_DIRECT,
+            ReconstructionEvidenceLevel.DETERMINISTIC_WITHIN_SOURCE,
+        }
+        and decision_type.action_structure_status is ActionStatus.DECISION_BOUNDARY_SUPPORTED
+        and decision_type.actor_status
+        in {
+            PerspectiveStatus.ACTOR_SOURCE_USER,
+            PerspectiveStatus.ACTOR_SOURCE_OPPO,
+            PerspectiveStatus.ACTOR_DERIVABLE,
+        }
+    )
 
 
 def classify_field(
@@ -1089,14 +1120,23 @@ def classify_value_shape(value: str) -> str:
 def validate_policy_field_for_decision(
     field: DecisionFieldSafetyV1,
     *,
-    candidate_turn_slot: int,
+    candidate_event_ordinal: int,
+    source_on_play: bool | None = None,
     decision_actor_source_side: str | None = None,
 ) -> None:
-    """Reject future-slot, post-action, unknown-time, or non-actor-safe inputs."""
-    if candidate_turn_slot < 1:
-        raise DecisionEvidenceError("candidate turn slot must be positive")
-    if field.turn_slot_index is not None and field.turn_slot_index > candidate_turn_slot:
-        raise DecisionEvidenceError("current/future turn slot cannot be pre-decision input")
+    """Reject future-slot, post-action, unknown-time, or non-actor-safe inputs.
+
+    Candidate and source slot positions use M5.1's zero-based chronological event
+    ordinal. Per-side slot indexes are converted using the source ``on_play`` flag.
+    """
+    if candidate_event_ordinal < 0:
+        raise DecisionEvidenceError("candidate event ordinal must be nonnegative")
+    if field.turn_slot_index is not None:
+        if type(source_on_play) is not bool:
+            raise DecisionEvidenceError("indexed turn fields require exact parsed source on_play")
+        field_event_ordinal = source_turn_event_ordinal(field, source_on_play=source_on_play)
+        if field_event_ordinal > candidate_event_ordinal:
+            raise DecisionEvidenceError("later chronological turn slot cannot be a policy input")
     if field.timing_status not in {TimingStatus.PRE_TURN, TimingStatus.TURN_START}:
         raise DecisionEvidenceError("field timing is not established before the candidate decision")
     if field.leakage_status is not LeakageStatus.PRE_DECISION_SAFE:
@@ -1115,6 +1155,15 @@ def validate_policy_field_for_decision(
         or field.perspective_status is not PerspectiveStatus.ACTOR_SOURCE_OPPO
     ):
         raise DecisionEvidenceError("source-oppo input requires an evidenced source-oppo actor")
+
+
+def source_turn_event_ordinal(field: DecisionFieldSafetyV1, *, source_on_play: bool) -> int:
+    """Convert a M5.1 per-side 1-based slot index to its 0-based source turn order."""
+    if field.turn_slot_index is None or field.source_side not in {"user", "oppo"}:
+        raise DecisionEvidenceError("chronological turn conversion requires an indexed side field")
+    first_side = "user" if source_on_play else "oppo"
+    within_pair_offset = 0 if field.source_side == first_side else 1
+    return 2 * (field.turn_slot_index - 1) + within_pair_offset
 
 
 def validate_perspective_swap_requirement(
