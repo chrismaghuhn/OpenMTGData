@@ -29,6 +29,8 @@ REPLAY_MAPPING_REGISTRY_DIGEST_CONTRACT_ID = "openmtgdata.replay-mapping-registr
 REPLAY_FIELD_ANALYSIS_CONTRACT_ID = "openmtgdata.replay-field-analysis.v1"
 REPLAY_EVENT_BOUNDARY_RULE_ID = "openmtgdata.replay-boundary.per-side-turn-slot.v1"
 REPLAY_EVENT_ORDINAL_RULE_ID = "openmtgdata.replay-event-ordinal.source-turn-order.v1"
+REPLAY_TURN_SIDE_TRANSFORMATION_ID = "openmtgdata.replay-turn-side-from-on-play.v1"
+REPLAY_TURN_INDEX_TRANSFORMATION_ID = "openmtgdata.replay-turn-slot-index-from-ordinal.v1"
 STRICT_TURN_COUNT_PARSER_ID = "openmtgdata.strict-nonnegative-decimal-int.v1"
 STRICT_ON_PLAY_PARSER_ID = "openmtgdata.strict-zero-one-bool.v1"
 PRESERVE_SOURCE_STRING_TRANSFORM_ID = "openmtgdata.preserve-csv-string.v1"
@@ -146,6 +148,7 @@ class ReplayFieldLineageV1:
     empty_value_policy: str
     failure_behavior: str
     evidence_basis: tuple[str, ...]
+    derived_inputs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -154,6 +157,7 @@ class ReplayFieldLineageV1:
             "event_slot_index": self.event_slot_index,
             "evidence_basis": list(self.evidence_basis),
             "failure_behavior": self.failure_behavior,
+            "derived_inputs": list(self.derived_inputs),
             "input_cardinality": self.input_cardinality,
             "lineage_contract_id": REPLAY_FIELD_LINEAGE_CONTRACT_ID,
             "normalized_field_path": self.normalized_field_path,
@@ -819,7 +823,6 @@ def build_turn_slot_mapping(
     family_selectors: dict[tuple[str, int], tuple[SourceColumnSelectorV1, ...]] = {}
     mapped: list[ReplaySourceFieldMappingV1] = []
     lineage: list[ReplayFieldLineageV1] = []
-    side_slot_selectors: dict[str, list[SourceColumnSelectorV1]] = {"user": [], "oppo": []}
     for side in ("user", "oppo"):
         for slot_index in range(1, 31):
             selected = sorted(
@@ -830,7 +833,6 @@ def build_turn_slot_mapping(
                 for field in selected
             )
             family_selectors[(side, slot_index)] = selectors
-            side_slot_selectors[side].extend(selectors)
             for field, selector in zip(selected, selectors, strict=True):
                 suffix = _TURN_FIELD_RE.fullmatch(field.exact_header_name)
                 if suffix is None:
@@ -931,28 +933,30 @@ def build_turn_slot_mapping(
             ReplayFieldLineageV1(
                 "source_turn_side",
                 FieldOrigin.DETERMINISTIC_NORMALIZATION,
-                tuple(side_slot_selectors["user"] + side_slot_selectors["oppo"]),
+                (on_play_col,),
                 None,
                 None,
-                REPLAY_EVENT_BOUNDARY_RULE_ID,
-                "one_selected_turn_slot",
+                REPLAY_TURN_SIDE_TRANSFORMATION_ID,
+                "one_source_flag_plus_event_ordinal",
                 "preserve_source_side_prefix.v1",
                 "not_applicable_by_event_structure",
                 "reject_record_on_ambiguous_slot",
-                ("exact indexed source turn-family prefix",),
+                ("exact on_play selector", "versioned alternating source-turn-order rule"),
+                ("event_ordinal_within_source_record",),
             ),
             ReplayFieldLineageV1(
                 "source_turn_slot_index",
                 FieldOrigin.DETERMINISTIC_NORMALIZATION,
-                tuple(side_slot_selectors["user"] + side_slot_selectors["oppo"]),
+                (),
                 None,
                 None,
-                REPLAY_EVENT_BOUNDARY_RULE_ID,
-                "one_selected_turn_slot",
-                "strict_decimal_index_from_exact_header_selector.v1",
+                REPLAY_TURN_INDEX_TRANSFORMATION_ID,
+                "one_event_ordinal",
+                "integer_slot_index_from_ordinal.v1",
                 "not_applicable_by_event_structure",
                 "reject_record_on_ambiguous_slot",
-                ("exact indexed source turn-family suffix",),
+                ("zero-based event ordinal rule",),
+                ("event_ordinal_within_source_record",),
             ),
         )
     )

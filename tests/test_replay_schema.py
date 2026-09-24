@@ -500,6 +500,16 @@ def test_every_emitted_source_field_has_exact_indexed_lineage() -> None:
         "source_turn_side",
         "source_turn_slot_index",
     } <= lineage_paths
+    lineage_by_path = {item.normalized_field_path: item for item in mapping.field_lineage}
+    side_lineage = lineage_by_path["source_turn_side"]
+    side_selectors = [
+        (item.column_index, item.exact_header_name) for item in side_lineage.source_selectors
+    ]
+    assert side_selectors == [(mapping.on_play_selector.column_index, "on_play")]
+    assert side_lineage.derived_inputs == ("event_ordinal_within_source_record",)
+    slot_lineage = lineage_by_path["source_turn_slot_index"]
+    assert slot_lineage.source_selectors == ()
+    assert slot_lineage.derived_inputs == ("event_ordinal_within_source_record",)
     assert all(item.normalized_field_path in lineage_paths for item in mapping.mapped_turn_fields)
     result = adapter.normalize_record(_raw_turn_record(group), header_fields=group.field_names)
     for event in result.events:
