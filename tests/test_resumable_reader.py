@@ -516,3 +516,42 @@ def test_fatal_next_batch_does_not_advance_checkpoint(tmp_path: Path) -> None:
             resumed.next_batch()
         assert resumed.summary.committed_batch_ordinal == checkpoint.committed_batch_ordinal
         assert resumed.status is SessionStatus.INCOMPLETE
+
+
+@pytest.mark.parametrize("damage", ["truncated", "crc"])
+def test_resume_gzip_tail_failure_never_creates_complete_marker(
+    tmp_path: Path, damage: str
+) -> None:
+    rows = b"".join(f"{index},value-{index:05d}\n".encode() for index in range(5_000))
+    config, record, registry, reader_config, root, source = _setup(
+        tmp_path, b"a,b\n" + rows, batch_size=256
+    )
+    with open_resumable_source_session(
+        record, registry, config, checkpoint_root=root, reader_config=reader_config
+    ) as first_session:
+        first = first_session.next_batch()
+        assert first is not None
+        assert first.batch.records_seen == 256
+        first_session.commit_batch(first.unit_id)
+        committed_boundary = first_session.summary.last_committed_data_record_ordinal
+
+    compressed = source.read_bytes()
+    damaged = (
+        compressed[:-8]
+        if damage == "truncated"
+        else compressed[:-8] + bytes([compressed[-8] ^ 1]) + compressed[-7:]
+    )
+    source.write_bytes(damaged)
+    with open_resumable_source_session(
+        record, registry, config, checkpoint_root=root, reader_config=reader_config
+    ) as resumed:
+        assert resumed.summary.last_committed_data_record_ordinal == committed_boundary
+        try:
+            while (unit := resumed.next_batch()) is not None:
+                resumed.commit_batch(unit.unit_id)
+        except SourceReaderError:
+            pass
+        assert resumed.status is SessionStatus.INCOMPLETE
+        assert resumed.summary.terminal_reader_completion_status == "fatal_error"
+        assert resumed.summary.last_committed_data_record_ordinal >= committed_boundary
+    assert not list(root.rglob("complete.json"))
