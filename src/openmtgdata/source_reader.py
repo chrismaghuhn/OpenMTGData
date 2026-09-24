@@ -45,6 +45,7 @@ from openmtgdata.schema_evolution import (
     SCHEMA_REGISTRY_DIGEST_CONTRACT_ID,
     SOURCE_INTERPRETATION_CONTRACT_SCHEMA_ID,
     SchemaEvolutionError,
+    SchemaEvolutionPolicyV1,
     derive_source_interpretation_contract_id,
 )
 from openmtgdata.source_filename import RecognizedSourceFilename, SourceKind
@@ -57,9 +58,6 @@ DIAGNOSTIC_CONTRACT_ID = "openmtgdata.source-reader-diagnostic.v1"
 SUMMARY_CONTRACT_ID = "openmtgdata.source-reader-summary.v1"
 READER_CONFIG_CONTRACT_ID = "openmtgdata.source-reader-config.v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-ACCEPTED_SCHEMA_REGISTRY_DIGEST = "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
-ACCEPTED_SOURCE_CATALOG_DIGEST = "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602"
-ACCEPTED_M3_EVIDENCE_DIGEST = "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add"
 
 
 class SourceReaderError(RuntimeError):
@@ -187,8 +185,14 @@ class VerifiedSchemaRegistryV1:
         )
 
 
-def load_verified_schema_registry(path: Path) -> VerifiedSchemaRegistryV1:
-    """Load persisted registry JSON, verifying its digest and internal references."""
+def load_verified_schema_registry(
+    path: Path,
+    *,
+    expected_registry_digest: str | None = None,
+    expected_source_catalog_digest: str | None = None,
+    expected_m3_evidence_digest: str | None = None,
+) -> VerifiedSchemaRegistryV1:
+    """Validate registry contracts; optional caller pins bind a specific snapshot."""
     try:
         outer = json.loads(path.read_text(encoding="utf-8"))
         registry = outer["registry"]
@@ -206,18 +210,30 @@ def load_verified_schema_registry(path: Path) -> VerifiedSchemaRegistryV1:
     computed = hashlib.sha256(_canonical_bytes(registry)).hexdigest()
     if not _SHA256_RE.fullmatch(digest) or computed != digest:
         raise SchemaEvolutionError("schema registry digest mismatch")
-    if digest != ACCEPTED_SCHEMA_REGISTRY_DIGEST:
-        raise SchemaEvolutionError("registry digest differs from the reviewed M3.2 baseline")
-    if registry.get("semantic_source_catalog_digest") != ACCEPTED_SOURCE_CATALOG_DIGEST:
-        raise SchemaEvolutionError("registry is bound to an unexpected semantic source catalog")
-    if registry.get("deep_inspection_evidence_digest") != ACCEPTED_M3_EVIDENCE_DIGEST:
-        raise SchemaEvolutionError("registry is bound to unexpected M3.1 evidence")
+    source_catalog_digest = registry.get("semantic_source_catalog_digest")
+    m3_evidence_digest = registry.get("deep_inspection_evidence_digest")
+    if not isinstance(source_catalog_digest, str) or not _SHA256_RE.fullmatch(
+        source_catalog_digest
+    ):
+        raise SchemaEvolutionError("registry source catalog digest is malformed")
+    if not isinstance(m3_evidence_digest, str) or not _SHA256_RE.fullmatch(m3_evidence_digest):
+        raise SchemaEvolutionError("registry M3.1 evidence digest is malformed")
+    for label, expected, actual in (
+        ("registry", expected_registry_digest, digest),
+        ("source catalog", expected_source_catalog_digest, source_catalog_digest),
+        ("M3 evidence", expected_m3_evidence_digest, m3_evidence_digest),
+    ):
+        if expected is not None:
+            if not _SHA256_RE.fullmatch(expected):
+                raise ValueError(f"expected {label} digest must be lowercase SHA-256 hex")
+            if expected != actual:
+                raise SchemaEvolutionError(f"registry does not match expected {label} digest")
     if registry.get("header_inventory_contract_id") != EXPECTED_M2_HEADER_INVENTORY_CONTRACT_ID:
         raise SchemaEvolutionError("registry has an unsupported header inventory contract")
     if registry.get("deep_inspection_method_id") != EXPECTED_M3_DEEP_METHOD_ID:
         raise SchemaEvolutionError("registry has an unsupported deep inspection method")
     policy = registry.get("policy")
-    if not isinstance(policy, dict) or policy.get("policy_id") != SCHEMA_EVOLUTION_POLICY_ID:
+    if not isinstance(policy, dict) or policy != SchemaEvolutionPolicyV1().to_dict():
         raise SchemaEvolutionError("unsupported schema evolution policy")
     if registry.get("source_interpretation_contract_schema_id") != (
         SOURCE_INTERPRETATION_CONTRACT_SCHEMA_ID

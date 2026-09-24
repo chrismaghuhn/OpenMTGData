@@ -160,7 +160,18 @@ def test_registry_loader_verifies_persisted_registry(tmp_path: Path) -> None:
     registry_path = Path("data/intermediate/m3.2/schema-registry.json")
     if not registry_path.exists():
         pytest.skip("local ignored M3.2 registry is unavailable")
-    registry = load_verified_schema_registry(registry_path)
+    registry = load_verified_schema_registry(
+        registry_path,
+        expected_registry_digest=(
+            "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
+        ),
+        expected_source_catalog_digest=(
+            "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602"
+        ),
+        expected_m3_evidence_digest=(
+            "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add"
+        ),
+    )
     assert (
         registry.schema_registry_digest
         == "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
@@ -173,6 +184,9 @@ def test_registry_loader_verifies_persisted_registry(tmp_path: Path) -> None:
     bad.write_text(json.dumps(parsed), encoding="utf-8")
     with pytest.raises(SchemaEvolutionError):
         load_verified_schema_registry(bad)
+
+    with pytest.raises(SchemaEvolutionError, match="expected registry digest"):
+        load_verified_schema_registry(registry_path, expected_registry_digest="0" * 64)
 
 
 def test_configuration_limits_are_validated() -> None:
@@ -270,3 +284,44 @@ def test_reader_does_not_mutate_registered_source(tmp_path: Path) -> None:
     with open_source_reader(record, registry, config=config) as reader:
         list(reader)
     assert source.read_bytes() == before
+
+
+@pytest.mark.parametrize("damage", ["truncated", "crc"])
+def test_gzip_tail_damage_cannot_complete_reader(tmp_path: Path, damage: str) -> None:
+    body = b"a,b\n" + b"x,y\n" * 20_000
+    record, registry, config = _reader_fixture(tmp_path, body, batch_size=8)
+    source = record.raw_root / Path(record.relative_path)
+    compressed = source.read_bytes()
+    assert len(compressed) > 8
+    damaged = (
+        compressed[:-8]
+        if damage == "truncated"
+        else (compressed[:-8] + bytes([compressed[-8] ^ 1]) + compressed[-7:])
+    )
+    source.write_bytes(damaged)
+
+    reader = open_source_reader(record, registry, config=config)
+    accepted_before_failure = 0
+    with reader:
+        try:
+            for batch in reader:
+                accepted_before_failure += batch.records_accepted
+        except SourceReaderError:
+            pass
+        assert accepted_before_failure > 0
+        assert reader.summary.completion_status is CompletionStatus.FATAL_ERROR
+        assert reader.summary.gzip_integrity_status != "valid"
+
+
+def test_source_mutation_while_reader_is_active_fails_closed(tmp_path: Path) -> None:
+    body = b"a,b\n" + b"x,y\n" * 1_000
+    record, registry, config = _reader_fixture(tmp_path, body, batch_size=2)
+    source = record.raw_root / Path(record.relative_path)
+    reader = open_source_reader(record, registry, config=config)
+    with reader:
+        first = next(reader)
+        assert first.records_accepted == 2
+        source.write_bytes(gzip.compress(b"a,b\n" + b"z,q\n" * 1_000))
+        with pytest.raises(SourceReaderError):
+            list(reader)
+        assert reader.summary.completion_status is CompletionStatus.FATAL_ERROR
