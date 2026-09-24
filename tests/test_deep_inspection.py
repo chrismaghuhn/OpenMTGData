@@ -136,7 +136,7 @@ def test_lexical_evidence_uses_exact_ascii_grammar(value: str, expected: str) ->
 
 
 def test_method_contracts_and_default_safety_limits() -> None:
-    assert DEEP_INSPECTION_METHOD_ID == "openmtgdata.deep-source-inspection.v1"
+    assert DEEP_INSPECTION_METHOD_ID == "openmtgdata.deep-source-inspection.v2"
     assert DEEP_INSPECTION_REPORT_CONTRACT_ID == "openmtgdata.deep-inspection-report.v1"
     assert LEXICAL_EVIDENCE_CONTRACT_ID == "openmtgdata.lexical-field-evidence.v1"
     assert REPRESENTATIVE_SELECTION_CONTRACT_ID == "openmtgdata.deep-representative-selection.v1"

@@ -48,6 +48,7 @@ from openmtgdata.header_inspection import (
     fingerprint_raw_schema,
 )
 from openmtgdata.inventory import InventoryItem
+from openmtgdata.source_container import open_csv_source_payload
 from openmtgdata.source_filename import RecognizedSourceFilename, SourceKind
 from openmtgdata.source_manifest import (
     SOURCE_MANIFEST_SCHEMA_ID,
@@ -55,7 +56,7 @@ from openmtgdata.source_manifest import (
 )
 
 DEEP_INSPECTION_SCHEMA_ID = "openmtgdata.deep-source-inspection-record.v1"
-DEEP_INSPECTION_METHOD_ID = "openmtgdata.deep-source-inspection.v1"
+DEEP_INSPECTION_METHOD_ID = "openmtgdata.deep-source-inspection.v2"
 DEEP_INSPECTION_ID_CONTRACT_ID = "openmtgdata.deep-source-inspection-id.v1"
 DEEP_INSPECTION_REPORT_CONTRACT_ID = "openmtgdata.deep-inspection-report.v1"
 LEXICAL_EVIDENCE_CONTRACT_ID = "openmtgdata.lexical-field-evidence.v1"
@@ -1023,8 +1024,15 @@ def inspect_registered_archive_rows(
         with _open_verified_archive(item) as (compressed, initial, opened):
             try:
                 with gzip.GzipFile(fileobj=compressed, mode="rb") as decompressed:
-                    lines = _BoundedPhysicalLines(
+                    if not isinstance(record.filename_result, RecognizedSourceFilename):
+                        raise DeepInspectionError("deep scan requires recognized source kind")
+                    payload = open_csv_source_payload(
                         decompressed,
+                        original_filename=record.original_filename,
+                        source_kind=record.filename_result.source_kind.value,
+                    )
+                    lines = _BoundedPhysicalLines(
+                        payload.stream,
                         max_logical_row_bytes,
                         max_row_fields,
                     )

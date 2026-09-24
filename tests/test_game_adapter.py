@@ -17,8 +17,10 @@ from openmtgdata.game_schema import (
     GameFieldMappingV1,
     GameMappingGroupV1,
     GameMappingRegistryV1,
+    GameMappingReviewV1,
     GameSchemaError,
     GameSourceSelectorV1,
+    derive_game_m4_review_evidence_id,
     derive_game_mapping_id,
     derive_game_registry_digest,
 )
@@ -86,6 +88,28 @@ def _fixture(tmp_path: Path):
         )
         for selector, path in zip(selectors, paths, strict=True)
     )
+    review = GameMappingReviewV1(
+        "openmtgdata.game-mapping-review.v1",
+        record.source_archive_id,
+        record.compressed_sha256,
+        record.compressed_size_bytes,
+        header.raw_schema_fingerprint,
+        interpretation_id,
+        "c" * 64,
+        "0" * 64,
+        "openmtgdata.raw-source-reader.v2",
+        "complete",
+        2,
+        2,
+        0,
+        (),
+        2,
+        2,
+        0,
+        "d" * 64,
+        "m4-full-stream-verified",
+    )
+    m4_review_id = derive_game_m4_review_evidence_id(review)
     mapping = GameFieldMappingV1(
         "",
         header.raw_schema_fingerprint,
@@ -104,19 +128,22 @@ def _fixture(tmp_path: Path):
         "exact physical header width",
         "preserve empty string",
         "source strings only",
-        GAME_EVIDENCE_BINDINGS,
+        (*GAME_EVIDENCE_BINDINGS, "M3.2 schema registry:" + "c" * 64, m4_review_id),
     )
     mapping = replace(mapping, game_field_mapping_id=derive_game_mapping_id(mapping))
+    review = replace(review, game_field_mapping_id=mapping.game_field_mapping_id)
     group = GameMappingGroupV1(
         mapping.raw_schema_fingerprint,
         interpretation_id,
         GameDisposition.SUPPORTED,
         mapping.game_field_mapping_id,
         1,
+        (record.source_archive_id,),
         len(header.ordered_fields),
         "synthetic test mapping",
         "exact physical header width",
         (),
+        review,
     )
     registry = GameMappingRegistryV1(
         "c" * 64,
@@ -201,6 +228,7 @@ def test_needs_review_group_cannot_be_normalized(tmp_path: Path) -> None:
         game_registry.groups[0],
         disposition=GameDisposition.NEEDS_REVIEW,
         game_field_mapping_id=None,
+        review=None,
     )
     blocked = replace(
         game_registry,
@@ -218,6 +246,27 @@ def test_needs_review_group_cannot_be_normalized(tmp_path: Path) -> None:
             )
 
 
+def test_m4_raw_record_contracts_are_checked_explicitly(tmp_path: Path) -> None:
+    from dataclasses import replace as dc_replace
+
+    record, _, source_registry, game_registry = _fixture(tmp_path)
+    adapter = GameAdapterV1(game_registry)
+    with open_source_reader(record, source_registry) as reader:
+        raw = next(iter(reader)).accepted_records[0]
+        with pytest.raises(GameSchemaError, match="record contract"):
+            adapter.normalize_record(
+                dc_replace(raw, raw_csv_record_contract_id="wrong.v1"),
+                source_archive_record=record,
+                header_fields=reader.header_fields,
+            )
+        with pytest.raises(GameSchemaError, match="reader contract"):
+            adapter.normalize_record(
+                dc_replace(raw, reader_contract_id="wrong.v1"),
+                source_archive_record=record,
+                header_fields=reader.header_fields,
+            )
+
+
 def test_reviewed_group_must_match_interpretation_and_exact_header(tmp_path: Path) -> None:
     record, _, source_registry, registry = _fixture(tmp_path)
     adapter = GameAdapterV1(registry)
@@ -231,16 +280,24 @@ def test_reviewed_group_must_match_interpretation_and_exact_header(tmp_path: Pat
             )
 
 
-def test_real_m3_evidence_has_all_36_game_groups_accounted_for_when_available() -> None:
-    evidence_path = Path("data/intermediate/m3.1/deep-inspection.json")
-    registry_path = Path("data/intermediate/m3.2/schema-registry.json")
+def test_real_m3_evidence_has_all_corrected_game_groups_accounted_for_when_available() -> None:
+    evidence_path = Path("data/intermediate/m5.2/deep-inspection-container-v2-methods.json")
+    registry_path = Path("data/intermediate/m5.2/schema-registry-container-v2-methods.json")
     if not evidence_path.exists() or not registry_path.exists():
         pytest.skip("ignored local M3 evidence is unavailable")
-    evidence = load_verified_m3_evidence(evidence_path)
+    evidence = load_verified_m3_evidence(
+        evidence_path,
+        expected_evidence_digest="c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29",
+        expected_source_catalog_digest="dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602",
+    )
     from openmtgdata.source_reader import load_verified_schema_registry
 
     source_registry = load_verified_schema_registry(registry_path)
-    from openmtgdata.game_adapter import build_game_mapping_registry
+    from openmtgdata.game_adapter import (
+        AFR_GAME_RAW_FINGERPRINT,
+        _mapping_for_group,
+        build_game_mapping_registry,
+    )
 
     result = build_game_mapping_registry(
         evidence.groups,
@@ -248,6 +305,89 @@ def test_real_m3_evidence_has_all_36_game_groups_accounted_for_when_available() 
         semantic_source_catalog_digest=evidence.semantic_source_catalog_digest,
         deep_inspection_evidence_digest=evidence.deep_inspection_evidence_digest,
     )
-    assert len(result.groups) == 36
+    assert len(result.groups) == 35
     assert sum(item.archive_count for item in result.groups) == 100
     assert all(item.disposition is GameDisposition.NEEDS_REVIEW for item in result.groups)
+
+    afr = next(
+        item for item in evidence.groups if item.raw_schema_fingerprint == AFR_GAME_RAW_FINGERPRINT
+    )
+    interpretation = next(
+        item.source_interpretation_contract_id
+        for item in source_registry.groups
+        if item.raw_schema_fingerprint == AFR_GAME_RAW_FINGERPRINT
+    )
+    review = GameMappingReviewV1(
+        "openmtgdata.game-mapping-review.v1",
+        afr.representative_source_archive_id,
+        "f" * 64,
+        100,
+        afr.raw_schema_fingerprint,
+        interpretation,
+        source_registry.schema_registry_digest,
+        "0" * 64,
+        "openmtgdata.raw-source-reader.v2",
+        "complete",
+        2,
+        2,
+        0,
+        (),
+        2,
+        2,
+        0,
+        "a" * 64,
+        "m4-full-stream-verified",
+    )
+    mapping = _mapping_for_group(
+        afr,
+        interpretation,
+        schema_registry_digest=source_registry.schema_registry_digest,
+        m4_review_evidence_id=derive_game_m4_review_evidence_id(review),
+    )
+    review = replace(review, game_field_mapping_id=mapping.game_field_mapping_id)
+    supported = build_game_mapping_registry(
+        evidence.groups,
+        source_registry,
+        semantic_source_catalog_digest=evidence.semantic_source_catalog_digest,
+        deep_inspection_evidence_digest=evidence.deep_inspection_evidence_digest,
+        reviews=(review,),
+    )
+    afr_disposition = next(
+        item
+        for item in supported.groups
+        if item.raw_schema_fingerprint == afr.raw_schema_fingerprint
+    )
+    assert afr_disposition.disposition is GameDisposition.SUPPORTED
+    assert afr_disposition.review == review
+    bad_review = replace(review, m4_records_seen=1, game_field_mapping_id="0" * 64)
+    bad_mapping = _mapping_for_group(
+        afr,
+        interpretation,
+        schema_registry_digest=source_registry.schema_registry_digest,
+        m4_review_evidence_id=derive_game_m4_review_evidence_id(bad_review),
+    )
+    bad_review = replace(bad_review, game_field_mapping_id=bad_mapping.game_field_mapping_id)
+    with pytest.raises(GameSchemaError, match="counts do not reconcile"):
+        build_game_mapping_registry(
+            evidence.groups,
+            source_registry,
+            semantic_source_catalog_digest=evidence.semantic_source_catalog_digest,
+            deep_inspection_evidence_digest=evidence.deep_inspection_evidence_digest,
+            reviews=(bad_review,),
+        )
+    with pytest.raises(GameSchemaError, match="lacks complete M4"):
+        build_game_mapping_registry(
+            evidence.groups,
+            source_registry,
+            semantic_source_catalog_digest=evidence.semantic_source_catalog_digest,
+            deep_inspection_evidence_digest=evidence.deep_inspection_evidence_digest,
+            reviews=(replace(review, m4_completion_status="incomplete"),),
+        )
+    with pytest.raises(GameSchemaError, match="submissions do not reconcile"):
+        build_game_mapping_registry(
+            evidence.groups,
+            source_registry,
+            semantic_source_catalog_digest=evidence.semantic_source_catalog_digest,
+            deep_inspection_evidence_digest=evidence.deep_inspection_evidence_digest,
+            reviews=(replace(review, m5_records_submitted=1),),
+        )

@@ -48,9 +48,14 @@ from openmtgdata.schema_evolution import (
     SchemaEvolutionPolicyV1,
     derive_source_interpretation_contract_id,
 )
+from openmtgdata.source_container import (
+    CsvSourcePayloadV1,
+    SourceContainerError,
+    open_csv_source_payload,
+)
 from openmtgdata.source_filename import RecognizedSourceFilename, SourceKind
 
-READER_CONTRACT_ID = "openmtgdata.raw-source-reader.v1"
+READER_CONTRACT_ID = "openmtgdata.raw-source-reader.v2"
 LOCATOR_CONTRACT_ID = "openmtgdata.source-record-locator.v1"
 RAW_RECORD_CONTRACT_ID = "openmtgdata.raw-csv-record.v1"
 BATCH_CONTRACT_ID = "openmtgdata.raw-csv-batch.v1"
@@ -474,6 +479,7 @@ class SourceReaderV1:
         self._compressed: BinaryIO | None = None
         self._hashing: _HashingReader | None = None
         self._gzip: gzip.GzipFile | None = None
+        self._source_payload: CsvSourcePayloadV1 | None = None
         self._lines: _BoundedPhysicalLines | None = None
         self._csv: Iterator[list[str]] | None = None
         self._fields: tuple[str, ...] = ()
@@ -515,8 +521,19 @@ class SourceReaderV1:
             self._gzip = self._stack.enter_context(
                 gzip.GzipFile(fileobj=cast(BinaryIO, self._hashing), mode="rb")
             )
+            try:
+                self._source_payload = open_csv_source_payload(
+                    self._gzip,
+                    original_filename=self.record.original_filename,
+                    source_kind=self.record.filename_result.source_kind.value,
+                )
+            except gzip.BadGzipFile as exc:
+                raise SourceReaderError(ReaderDiagnosticCode.INVALID_GZIP.value) from exc
+            except (EOFError, zlib.error) as exc:
+                raise SourceReaderError(ReaderDiagnosticCode.TRUNCATED_GZIP.value) from exc
+            self._stack.callback(self._source_payload.close)
             self._lines = _BoundedPhysicalLines(
-                self._gzip,
+                self._source_payload.stream,
                 self.config.max_logical_record_bytes,
                 self.config.max_fields_per_record,
             )
@@ -800,6 +817,14 @@ class SourceReaderV1:
     def _complete(self) -> None:
         if self._eof:
             return
+        if self._source_payload is None:
+            raise SourceReaderError("source container is unavailable at completion")
+        try:
+            self._source_payload.finish()
+        except SourceContainerError as exc:
+            raise SourceReaderError(
+                "READ_FAILURE: source container failed integrity check"
+            ) from exc
         if self._gzip is not None:
             self._gzip.close()
         if self._hashing is None or self._compressed is None:

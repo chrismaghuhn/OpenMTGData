@@ -157,26 +157,26 @@ def test_early_consumer_stop_is_not_complete(tmp_path: Path) -> None:
 
 
 def test_registry_loader_verifies_persisted_registry(tmp_path: Path) -> None:
-    registry_path = Path("data/intermediate/m3.2/schema-registry.json")
+    registry_path = Path("data/intermediate/m5.2/schema-registry-container-v2-methods.json")
     if not registry_path.exists():
         pytest.skip("local ignored M3.2 registry is unavailable")
     registry = load_verified_schema_registry(
         registry_path,
         expected_registry_digest=(
-            "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
+            "66d58e20fa2adbcbfdcfd927c1074b5807d43af8af94103b61b26fc06f13661c"
         ),
         expected_source_catalog_digest=(
             "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602"
         ),
         expected_m3_evidence_digest=(
-            "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add"
+            "c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29"
         ),
     )
     assert (
         registry.schema_registry_digest
-        == "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
+        == "66d58e20fa2adbcbfdcfd927c1074b5807d43af8af94103b61b26fc06f13661c"
     )
-    assert len(registry.groups) == 77
+    assert len(registry.groups) == 75
 
     parsed = json.loads(registry_path.read_text(encoding="utf-8"))
     parsed["registry"]["policy"]["policy_id"] = "tampered"

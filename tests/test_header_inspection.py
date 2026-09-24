@@ -91,7 +91,7 @@ def test_contract_ids_and_basic_header_observation(tmp_path: Path) -> None:
     inspection = _inspect(tmp_path, b"game_id,turn,action\r\n1,2,play\r\n")
 
     assert SOURCE_INSPECTION_SCHEMA_ID == "openmtgdata.source-inspection.v1"
-    assert HEADER_INSPECTION_METHOD_ID == "openmtgdata.header-inspection.v1"
+    assert HEADER_INSPECTION_METHOD_ID == "openmtgdata.header-inspection.v2"
     assert HEADER_INVENTORY_CONTRACT_ID == "openmtgdata.header-inventory.v1"
     assert RAW_SCHEMA_FINGERPRINT_CONTRACT_ID == "openmtgdata.raw-schema-fingerprint.v1"
     assert inspection.status is HeaderInspectionStatus.SUCCESS

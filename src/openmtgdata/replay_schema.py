@@ -15,7 +15,7 @@ from openmtgdata.schema_evolution import (
     VerifiedM3EvidenceV1,
 )
 from openmtgdata.source_filename import SourceKind
-from openmtgdata.source_reader import VerifiedSchemaRegistryV1
+from openmtgdata.source_reader import READER_CONTRACT_ID, VerifiedSchemaRegistryV1
 
 REPLAY_EVENT_SCHEMA_ID = "openmtgdata.replay-event.v1"
 REPLAY_FIELD_MAPPING_CONTRACT_ID = "openmtgdata.replay-field-mapping.v1"
@@ -1008,7 +1008,8 @@ def build_turn_slot_mapping(
         (
             f"M3.1:{m3_evidence_digest}",
             f"review_source_archive:{source_archive_id_reviewed}",
-            "M4.1 raw row and exact header authority",
+            f"M4 reader contract:{READER_CONTRACT_ID}",
+            "M4 raw row and exact header authority",
         ),
     )
     return replace(

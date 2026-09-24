@@ -87,7 +87,7 @@ def _evidence_and_registry() -> tuple[VerifiedM3EvidenceV1, VerifiedSchemaRegist
     evidence = VerifiedM3EvidenceV1(
         "2" * 64,
         "3" * 64,
-        "openmtgdata.deep-source-inspection.v1",
+        "openmtgdata.deep-source-inspection.v2",
         "openmtgdata.header-inventory.v1",
         "4" * 64,
         2,
@@ -541,15 +541,15 @@ def test_real_replay_mapping_review_artifact_is_optional_and_ignored() -> None:
     assert len(document["groups"]) == 41
 
 
-def test_real_m3_replay_analysis_covers_41_groups_when_local_artifacts_exist() -> None:
-    deep_path = Path("data/intermediate/m3.1/deep-inspection.json")
-    registry_path = Path("data/intermediate/m3.2/schema-registry.json")
+def test_real_m3_replay_analysis_covers_40_groups_when_local_artifacts_exist() -> None:
+    deep_path = Path("data/intermediate/m5.2/deep-inspection-container-v2-methods.json")
+    registry_path = Path("data/intermediate/m5.2/schema-registry-container-v2-methods.json")
     if not deep_path.exists() or not registry_path.exists():
         pytest.skip("ignored local M3 evidence artifacts are unavailable")
     evidence = load_verified_m3_evidence(
         deep_path,
         expected_evidence_digest=(
-            "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add"
+            "c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29"
         ),
         expected_source_catalog_digest=(
             "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602"
@@ -558,17 +558,17 @@ def test_real_m3_replay_analysis_covers_41_groups_when_local_artifacts_exist() -
     registry = load_verified_schema_registry(
         registry_path,
         expected_registry_digest=(
-            "7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb"
+            "66d58e20fa2adbcbfdcfd927c1074b5807d43af8af94103b61b26fc06f13661c"
         ),
         expected_source_catalog_digest=(
             "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602"
         ),
         expected_m3_evidence_digest=(
-            "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add"
+            "c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29"
         ),
     )
     analysis = build_replay_field_analysis(evidence, registry)
-    assert len(analysis.groups) == 41
+    assert len(analysis.groups) == 40
     assert sum(item.archive_count for item in analysis.groups) == 100
     assert all(
         len(item.exact_ordered_header_surface) == item.field_count for item in analysis.groups

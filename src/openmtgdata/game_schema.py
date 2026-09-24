@@ -19,9 +19,8 @@ GAME_LOCATOR_SCHEMA_ID = "openmtgdata.game-record-locator.v1"
 GAME_REGISTRY_SCHEMA_ID = "openmtgdata.game-mapping-registry.v1"
 GAME_REGISTRY_DIGEST_SCHEMA_ID = "openmtgdata.game-mapping-registry-digest.v1"
 GAME_EVIDENCE_BINDINGS = (
-    "2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add",
+    "c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29",
     "dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602",
-    "openmtgdata.game-full-stream-review.v1:0443561f474493f7b623bce7c7bbc138ea8ccb0f5c45c67129da37c007ab7669",
 )
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
@@ -50,6 +49,55 @@ class GameSourceSelectorV1:
 
     def to_dict(self) -> dict[str, object]:
         return {"column_index": self.column_index, "exact_header_name": self.exact_header_name}
+
+
+@dataclass(frozen=True, slots=True)
+class GameMappingReviewV1:
+    review_contract_id: str
+    source_archive_id: str
+    compressed_sha256: str
+    compressed_size_bytes: int
+    raw_schema_fingerprint: str
+    source_interpretation_contract_id: str
+    schema_registry_digest: str
+    game_field_mapping_id: str
+    m4_reader_contract_id: str
+    m4_completion_status: str
+    m4_records_seen: int
+    m4_records_accepted: int
+    m4_records_rejected: int
+    m4_diagnostic_counts: tuple[tuple[str, int], ...]
+    m5_records_submitted: int
+    m5_records_normalized: int
+    m5_records_rejected: int
+    semantic_validation_digest: str
+    evidence_scope: str
+
+    def identity_projection_dict(self) -> dict[str, object]:
+        return {
+            "compressed_sha256": self.compressed_sha256,
+            "compressed_size_bytes": self.compressed_size_bytes,
+            "evidence_scope": self.evidence_scope,
+            "game_field_mapping_id": self.game_field_mapping_id,
+            "m4_completion_status": self.m4_completion_status,
+            "m4_diagnostic_counts": dict(self.m4_diagnostic_counts),
+            "m4_reader_contract_id": self.m4_reader_contract_id,
+            "m4_records_accepted": self.m4_records_accepted,
+            "m4_records_rejected": self.m4_records_rejected,
+            "m4_records_seen": self.m4_records_seen,
+            "m5_records_normalized": self.m5_records_normalized,
+            "m5_records_rejected": self.m5_records_rejected,
+            "m5_records_submitted": self.m5_records_submitted,
+            "raw_schema_fingerprint": self.raw_schema_fingerprint,
+            "review_contract_id": self.review_contract_id,
+            "schema_registry_digest": self.schema_registry_digest,
+            "semantic_validation_digest": self.semantic_validation_digest,
+            "source_archive_id": self.source_archive_id,
+            "source_interpretation_contract_id": self.source_interpretation_contract_id,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return self.identity_projection_dict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,10 +182,12 @@ class GameMappingGroupV1:
     disposition: GameDisposition
     game_field_mapping_id: str | None
     archive_count: int
+    source_archive_ids: tuple[str, ...]
     field_count: int
     reason: str
     row_width_policy: str | None
     known_anomalies: tuple[str, ...]
+    review: GameMappingReviewV1 | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,7 +198,9 @@ class GameMappingGroupV1:
             "known_anomalies": list(self.known_anomalies),
             "raw_schema_fingerprint": self.raw_schema_fingerprint,
             "reason": self.reason,
+            "review": self.review.to_dict() if self.review is not None else None,
             "row_width_policy": self.row_width_policy,
+            "source_archive_ids": list(self.source_archive_ids),
             "source_interpretation_contract_id": self.source_interpretation_contract_id,
         }
 
@@ -301,17 +353,98 @@ def validate_game_registry(registry: GameMappingRegistryV1) -> None:
             candidate_mapping = mapping_by_id.get(group.game_field_mapping_id or "")
             if candidate_mapping is None:
                 raise GameSchemaError("supported Game group has no mapping")
+            if group.review is None:
+                raise GameSchemaError("supported Game group has no machine-readable M5.2 review")
             if (
                 candidate_mapping.raw_schema_fingerprint != group.raw_schema_fingerprint
                 or candidate_mapping.source_interpretation_contract_id
                 != group.source_interpretation_contract_id
             ):
                 raise GameSchemaError("Game group and mapping authority disagree")
+            validate_game_mapping_review(
+                group.review,
+                group=group,
+                mapping=candidate_mapping,
+                schema_registry_digest=registry.schema_registry_digest,
+            )
+            if derive_game_m4_review_evidence_id(group.review) not in (
+                candidate_mapping.evidence_bindings
+            ):
+                raise GameSchemaError("Game mapping ID does not bind its M4 review evidence")
         elif group.game_field_mapping_id is not None:
             raise GameSchemaError("unsupported Game group must not carry a mapping ID")
+        elif group.review is not None:
+            raise GameSchemaError("unsupported Game group cannot claim a successful review")
     if {item.raw_schema_fingerprint for item in registry.mappings} != {
         item.raw_schema_fingerprint
         for item in registry.groups
         if item.disposition is GameDisposition.SUPPORTED
     }:
         raise GameSchemaError("Game mappings and supported group dispositions differ")
+
+
+def validate_game_mapping_review(
+    review: GameMappingReviewV1,
+    *,
+    group: GameMappingGroupV1,
+    mapping: GameFieldMappingV1,
+    schema_registry_digest: str,
+) -> None:
+    """Fail closed unless a complete M4 and reconciled M5 review supports the group."""
+    if review.review_contract_id != "openmtgdata.game-mapping-review.v1":
+        raise GameSchemaError("unsupported Game mapping review contract")
+    if (
+        not _SHA.fullmatch(review.source_archive_id)
+        or review.source_archive_id not in group.source_archive_ids
+        or review.raw_schema_fingerprint != group.raw_schema_fingerprint
+        or review.raw_schema_fingerprint != mapping.raw_schema_fingerprint
+        or review.source_interpretation_contract_id != group.source_interpretation_contract_id
+        or review.source_interpretation_contract_id != mapping.source_interpretation_contract_id
+        or review.schema_registry_digest != schema_registry_digest
+        or review.game_field_mapping_id != mapping.game_field_mapping_id
+    ):
+        raise GameSchemaError("Game mapping review identity does not match reviewed group")
+    if not _SHA.fullmatch(review.compressed_sha256) or not _SHA.fullmatch(
+        review.semantic_validation_digest
+    ):
+        raise GameSchemaError("Game mapping review contains malformed SHA-256 identity")
+    if review.compressed_size_bytes <= 0 or review.m4_completion_status != "complete":
+        raise GameSchemaError("Game mapping review lacks complete M4 source verification")
+    if review.m4_reader_contract_id != "openmtgdata.raw-source-reader.v2":
+        raise GameSchemaError("Game mapping review uses an unsupported M4 reader contract")
+    counts = (
+        review.m4_records_seen,
+        review.m4_records_accepted,
+        review.m4_records_rejected,
+        review.m5_records_submitted,
+        review.m5_records_normalized,
+        review.m5_records_rejected,
+    )
+    if any(value < 0 for value in counts):
+        raise GameSchemaError("Game mapping review counters cannot be negative")
+    if review.m4_records_seen != review.m4_records_accepted + review.m4_records_rejected:
+        raise GameSchemaError("M4 Game review counts do not reconcile")
+    if sum(count for _, count in review.m4_diagnostic_counts) != review.m4_records_rejected:
+        raise GameSchemaError("M4 Game diagnostics do not reconcile with rejected records")
+    if review.m5_records_submitted != review.m4_records_accepted:
+        raise GameSchemaError("M5 Game submissions do not reconcile with M4 accepted records")
+    if review.m5_records_normalized + review.m5_records_rejected != review.m5_records_submitted:
+        raise GameSchemaError("M5 Game normalization counts do not reconcile")
+    if review.evidence_scope != "m4-full-stream-verified":
+        raise GameSchemaError("Game review is not scoped to a complete verified M4 stream")
+
+
+def derive_game_m4_review_evidence_id(review: GameMappingReviewV1) -> str:
+    """Derive non-circular mapping evidence identity from M4 source and terminal proof."""
+    projection = {
+        "compressed_sha256": review.compressed_sha256,
+        "compressed_size_bytes": review.compressed_size_bytes,
+        "evidence_scope": review.evidence_scope,
+        "m4_reader_contract_id": review.m4_reader_contract_id,
+        "raw_schema_fingerprint": review.raw_schema_fingerprint,
+        "review_contract_id": review.review_contract_id,
+        "schema_registry_digest": review.schema_registry_digest,
+        "source_archive_id": review.source_archive_id,
+        "source_interpretation_contract_id": review.source_interpretation_contract_id,
+    }
+    return "openmtgdata.game-m4-review-evidence.v1:" + _canonical_digest(projection)

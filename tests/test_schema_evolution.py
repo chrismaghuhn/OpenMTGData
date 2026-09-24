@@ -111,7 +111,7 @@ def _verified(groups: tuple[RawSchemaGroupEvidenceV1, ...]) -> VerifiedDeepEvide
         semantic_source_catalog_digest=_digest("source catalog"),
         deep_inspection_evidence_digest=_digest("deep report"),
         deep_inspection_report_contract_id=M3_REPORT_CONTRACT_ID,
-        deep_inspection_method_id="openmtgdata.deep-source-inspection.v1",
+        deep_inspection_method_id="openmtgdata.deep-source-inspection.v2",
         header_inventory_contract_id=EXPECTED_M2_HEADER_INVENTORY_CONTRACT_ID,
         header_inventory_evidence_digest=_digest("header inventory"),
         configured_source_count=sum(group.archive_count for group in groups),
@@ -180,7 +180,7 @@ def _synthetic_report_document(*, audit_timestamp: str | None = None) -> dict[st
     evidence = {
         "deep_inspection_report_contract_id": M3_REPORT_CONTRACT_ID,
         "deep_report_digest_contract_id": M3_REPORT_DIGEST_CONTRACT_ID,
-        "deep_inspection_method_id": "openmtgdata.deep-source-inspection.v1",
+        "deep_inspection_method_id": "openmtgdata.deep-source-inspection.v2",
         "header_inventory_contract_id": EXPECTED_M2_HEADER_INVENTORY_CONTRACT_ID,
         "header_inventory_evidence_digest": _digest("header identity"),
         "semantic_source_catalog_digest": _digest("catalog identity"),

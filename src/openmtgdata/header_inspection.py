@@ -29,12 +29,18 @@ from openmtgdata.compression_validation import (
     CompressionValidationStatus,
 )
 from openmtgdata.inventory import InventoryItem
+from openmtgdata.source_container import (
+    SOURCE_CONTAINER_POLICY_ID,
+    ByteReader,
+    SourceContainerError,
+    open_csv_source_payload,
+)
 from openmtgdata.source_filename import RecognizedSourceFilename, SourceKind
 from openmtgdata.source_manifest import SOURCE_MANIFEST_SCHEMA_ID, SourceManifestV1
 
 SOURCE_INSPECTION_SCHEMA_ID = "openmtgdata.source-inspection.v1"
 SOURCE_INSPECTION_ID_CONTRACT_ID = "openmtgdata.source-inspection-id.v1"
-HEADER_INSPECTION_METHOD_ID = "openmtgdata.header-inspection.v1"
+HEADER_INSPECTION_METHOD_ID = "openmtgdata.header-inspection.v2"
 RAW_SCHEMA_FINGERPRINT_CONTRACT_ID = "openmtgdata.raw-schema-fingerprint.v1"
 HEADER_INVENTORY_CONTRACT_ID = "openmtgdata.header-inventory.v1"
 SCHEMA_GROUPING_CONTRACT_ID = "openmtgdata.schema-grouping.v1"
@@ -84,6 +90,7 @@ class HeaderDiagnosticCode(StrEnum):
     READ_FAILURE = "READ_FAILURE"
     COMPRESSION_NOT_CHECKED = "COMPRESSION_NOT_CHECKED"
     GZIP_INTEGRITY_FAILURE = "GZIP_INTEGRITY_FAILURE"
+    UNSUPPORTED_SOURCE_CONTAINER = "UNSUPPORTED_SOURCE_CONTAINER"
 
 
 class TypeEvidenceStatus(StrEnum):
@@ -224,6 +231,9 @@ class SourceInspectionV1:
     source_kind: SourceKind | None
     expansion_token: str | None
     format_token: str | None
+    source_container_policy_id: str
+    source_container_kind: str | None
+    source_container_member_name: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -247,6 +257,9 @@ class SourceInspectionV1:
             "relative_path": self.relative_path.as_posix(),
             "raw_schema_fingerprint": self.raw_schema_fingerprint,
             "source_archive_id": self.source_archive_id,
+            "source_container_kind": self.source_container_kind,
+            "source_container_member_name": self.source_container_member_name,
+            "source_container_policy_id": self.source_container_policy_id,
             "source_inspection_id": self.source_inspection_id,
             "source_inspection_id_contract_id": self.source_inspection_id_contract_id,
             "source_inspection_schema_id": self.source_inspection_schema_id,
@@ -378,7 +391,7 @@ class _BoundedPhysicalLines(Iterator[str]):
 
     def __init__(
         self,
-        stream: gzip.GzipFile,
+        stream: ByteReader,
         max_header_bytes: int,
         max_header_fields: int,
     ) -> None:
@@ -610,7 +623,7 @@ def fingerprint_raw_schema(
 
 
 def _parse_header(
-    stream: gzip.GzipFile,
+    stream: ByteReader,
     *,
     max_header_bytes: int,
     max_header_fields: int,
@@ -719,6 +732,8 @@ def _inspection_id(
     diagnostics: tuple[HeaderDiagnosticCode, ...],
     tool_identity: str | None,
     compression_validation_status: CompressionValidationStatus,
+    source_container_kind: str | None,
+    source_container_member_name: str | None,
 ) -> str:
     return _sha256_json(
         {
@@ -728,6 +743,9 @@ def _inspection_id(
                 "header_evidence": header_evidence.to_dict() if header_evidence else None,
                 "status": status.value,
                 "compression_validation_status": compression_validation_status.value,
+                "source_container_policy_id": SOURCE_CONTAINER_POLICY_ID,
+                "source_container_kind": source_container_kind,
+                "source_container_member_name": source_container_member_name,
             },
             "scope": list(scope),
             "source_archive_id": record.source_archive_id,
@@ -765,6 +783,9 @@ def inspect_registered_archive(
     if min(max_header_bytes, max_header_fields, max_header_field_chars) <= 0:
         raise ValueError("header safety limits must be positive")
     item = _item_for_record(record)
+    if not isinstance(record.filename_result, RecognizedSourceFilename):
+        raise HeaderInspectionExecutionError("header inspection requires recognized source kind")
+    source_kind = record.filename_result.source_kind.value
     compression_status = (
         compression_evidence.status
         if compression_evidence is not None
@@ -789,6 +810,8 @@ def inspect_registered_archive(
     evidence: HeaderEvidenceV1 | None = None
     diagnostics: tuple[HeaderDiagnosticCode, ...] = ()
     status = HeaderInspectionStatus.SUCCESS
+    container_kind: str | None = None
+    container_member_name: str | None = None
     if compression_status is CompressionValidationStatus.NOT_CHECKED:
         status = HeaderInspectionStatus.UNSUPPORTED
         diagnostics = (HeaderDiagnosticCode.COMPRESSION_NOT_CHECKED,)
@@ -802,16 +825,29 @@ def inspect_registered_archive(
         try:
             with _open_verified_archive(item) as (compressed, initial, opened):
                 with gzip.GzipFile(fileobj=compressed, mode="rb") as decompressed:
-                    evidence = _parse_header(
+                    payload = open_csv_source_payload(
                         decompressed,
-                        max_header_bytes=max_header_bytes,
-                        max_header_fields=max_header_fields,
-                        max_header_field_chars=max_header_field_chars,
+                        original_filename=record.original_filename,
+                        source_kind=source_kind,
                     )
+                    container_kind = payload.container_kind
+                    container_member_name = payload.member_name
+                    try:
+                        evidence = _parse_header(
+                            payload.stream,
+                            max_header_bytes=max_header_bytes,
+                            max_header_fields=max_header_fields,
+                            max_header_field_chars=max_header_field_chars,
+                        )
+                    finally:
+                        payload.close()
                 _verify_opened_archive_unchanged(item, compressed, initial, opened)
         except HeaderInspectionError as exc:
             status = HeaderInspectionStatus.UNSUPPORTED
             diagnostics = (exc.code,)
+        except SourceContainerError:
+            status = HeaderInspectionStatus.UNSUPPORTED
+            diagnostics = (HeaderDiagnosticCode.UNSUPPORTED_SOURCE_CONTAINER,)
         except ArchiveRegistrationError as exc:
             raise HeaderInspectionExecutionError(
                 f"registered source changed or became unsafe during header inspection: {exc}"
@@ -867,6 +903,8 @@ def inspect_registered_archive(
         diagnostics=diagnostics,
         tool_identity=tool_identity,
         compression_validation_status=compression_status,
+        source_container_kind=container_kind,
+        source_container_member_name=container_member_name,
     )
     return SourceInspectionV1(
         source_inspection_schema_id=SOURCE_INSPECTION_SCHEMA_ID,
@@ -895,6 +933,9 @@ def inspect_registered_archive(
         source_kind=recognized.source_kind if recognized else None,
         expansion_token=recognized.expansion_token if recognized else None,
         format_token=recognized.format_token if recognized else None,
+        source_container_policy_id=SOURCE_CONTAINER_POLICY_ID,
+        source_container_kind=container_kind,
+        source_container_member_name=container_member_name,
     )
 
 

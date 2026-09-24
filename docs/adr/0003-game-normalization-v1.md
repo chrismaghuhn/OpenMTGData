@@ -1,23 +1,23 @@
 # ADR 0003: Evidence-gated Game source facts
 
-Status: accepted for M5.2, 2026-09-24
+Status: accepted for M5.2 on the corrected source-container authority, 2026-09-24
 
-## Decision
+## Decision and evidence binding
 
-M5.2 keeps the M3 physical fingerprint and structural interpretation identity unchanged and adds a separate deterministic `game_field_mapping_id`. All 36 observed Game groups (100 archives) are present in the registry. Only a schema independently reviewed through a complete M4 stream may be supported; the other 35 groups remain `needs_review` until their own evidence is examined. The registry binds M3.2 digest `7d3ef3af4304edd9a3aff88aee49f76e5e4c50b2908608b8f0b9e44a3f9fa1fb` and M3.1 evidence digest `2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add`.
+M5.2 adds a deterministic `game_field_mapping_id` without changing source archive IDs or M3 physical fingerprints/interpretation contracts. It accounts for all **35 Game schema groups / 100 archives** in the corrected M3 evidence. One group is supported after complete M4-v2 and M5.2 review; the other 34 remain `needs_review`.
 
-The reviewed AFR PremierDraft source has 1,082 physical columns and 366,661 logical rows, of which M4 accepted 366,660 exact-width rows. Its header's first field contains a long NUL/TAR metadata prefix followed by `user_win_rate_bucket`; this exact physical header is retained for fingerprint identity, but column 0 is left unmapped. Columns 1–17 have exact names and were mapped only as source-labeled, exact CSV strings. The remaining card-count columns stay available at the M4 raw layer. The reviewed mapping ID is `openmtgdata.game-field-mapping.v1:ed163bafaed657b8a6a78025809bc0b95aee41444a6fcac156334441e394881c`; registry digest is `d5afa30e5af990bc67dc68e91d0f56ad754c44d20d0df3dbb0dda33f3244f4e3`. This is not a claim that a source row is a globally unique game, nor that rows pair one-to-one with Replay records. Rows are called source rows; observed user/opponent-relative columns remain source-relative.
+The registry binds source catalog `dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602`, M3.1 evidence `c6c7d6e81c96179f41f32c27e5bfaf52e241a78f00478c8567c12a09ede9ba29`, and M3.2 registry `66d58e20fa2adbcbfdcfd927c1074b5807d43af8af94103b61b26fc06f13661c`.
 
-## Field and row policy
+## AFR PremierDraft source
 
-Each mapped field is selected by `(column_index, exact_header_name)`, has a lineage entry that matches the actual one-column copy operation, and preserves the parser-returned string exactly. No trimming, type coercion, empty-to-null conversion, date parsing, player perspective conversion, game-state reconstruction, or derived gameplay field is produced. Source-native `draft_id` and `game_number` remain source lexemes and are not approved join keys or uniqueness claims.
+The registered `.csv.gz` artifact is gzip containing one TAR member, `game_data_public.AFR.PremierDraft.csv`. Container policy `openmtgdata.source-container-policy.csv-gzip-v1` selects that exact regular member; M4 verifies it through CSV EOF, the single-member TAR trailer, gzip EOF, and the registered outer compressed bytes. The corrected CSV header has 1,082 physical fields and begins with exact field `user_win_rate_bucket`. Its physical fingerprint is `a2bddf4d55c72c4c329eda7af4740d0fce03a66a626f1c44148282ae80b5b840`; source archive ID remains `7cc18827a1f4ea5be145d1a31d2a0a78e03e7b747829c8a3c1e1336752381b91`.
 
-All rows must have the exact physical header width. M4 rejects short and long rows without padding, truncation, or invented names. M5.2 receives accepted M4 records only. For AFR, the single short row observed by M4 is excluded from normalization; any bias from that exclusion is unresolved.
+The M4-v2 full stream saw and accepted 366,660 CSV data records, rejected zero for row width, and verified 26,186,466 registered compressed bytes. M5.2 submitted and normalized all 366,660 accepted records, rejected zero, and emitted 18 source-direct string facts per record. The mapping ID is `openmtgdata.game-field-mapping.v1:c529133666df442a69b1a4be5e28f743a07098dbb27405ab8499867f7c055e1a`; the mapping-registry digest is `43d78b9e2cecf5f420046ace93c58f12f7fbfd563b8b3989ca085c90e0533593`. The incremental semantic validation digest is `822b56cd838c13268c30344c02ffe96553336301b5e2849a830eb879b8689cb6`.
 
-## Explicit limits
+Exact source strings from columns 0–17 are selected by `(column_index, exact_header_name)`. All 18 use source-direct lineage and preserve empty strings. No type conversion, date parsing, null inference, Unicode/string normalization, or reconstructed field is emitted. The other 1,064 physical fields, including card-count columns, remain explicitly `unmapped_preserved_at_raw_layer`. The local machine-readable analysis and registry are ignored under `data/intermediate/m5.2/` and contain no source row values or raw-root paths.
 
-M3.1 lexical classes describe bounded observations and do not establish semantic types or nullability. Source empty remains `""`. Unknown columns are marked `unmapped_preserved_at_raw_layer`. Outcome-like `won` is preserved only as `source_won_raw` and is not a policy input. Labels such as `on_play`, `rank`, and `opp_rank` remain source values without actor or perspective interpretation.
+## Row and field meaning limits
 
-Replay/Game joins and join-key approval belong to M6. SELF/OPPONENT policy perspective belongs to M7; future policy views must canonicalize the acting player as SELF and the other player as OPPONENT while keeping source identities as provenance. M5.2 does not emit those views. It also does not assert legality/optimality, enrich card names, access Replay data, publish Parquet, or train models.
+One accepted CSV row is the normalization unit. No cross-row grouping, global game uniqueness, participant pairing, or Replay correspondence is asserted. `draft_id`, `game_number`, `on_play`, `rank`, `opp_rank`, and `won` remain source-labeled lexemes; no join key, actor, outcome policy, or player perspective is inferred. Source URLs and license status remain unknown, and chronological coverage remains unavailable.
 
-Mapping corrections change the M5.2 mapping/registry identities and downstream semantic validation digests only; they do not rewrite source IDs, raw fingerprints, or M3.2 interpretation IDs.
+M4 width rejection does not exclude any rows from this corrected AFR source. Other sources may still have width-rejected rows; any downstream bias must be reviewed per source. M6 owns joins and join-key approval. M7 owns actor-relative policy views: future `DecisionSampleV1` policy views must map the acting player to SELF and the other player to OPPONENT while retaining absolute/source identity only as provenance. M5.2 does not implement these views, Replay/Game joins, game-state reconstruction, legal/optimal labels, card enrichment, Parquet, or training.

@@ -15,18 +15,22 @@ from openmtgdata.game_schema import (
     GameFieldMappingV1,
     GameMappingGroupV1,
     GameMappingRegistryV1,
+    GameMappingReviewV1,
     GameQualityCode,
     GameRecordLocatorV1,
     GameRecordV1,
     GameSchemaError,
     GameSourceFactV1,
     GameSourceSelectorV1,
+    derive_game_m4_review_evidence_id,
     derive_game_mapping_id,
     derive_game_registry_digest,
     validate_game_mapping,
+    validate_game_mapping_review,
     validate_game_registry,
 )
 from openmtgdata.source_filename import RecognizedSourceFilename, SourceKind
+from openmtgdata.source_reader import RAW_RECORD_CONTRACT_ID, READER_CONTRACT_ID
 
 if TYPE_CHECKING:
     from openmtgdata.archive_registration import SourceArchiveRecordV1
@@ -34,8 +38,9 @@ if TYPE_CHECKING:
     from openmtgdata.source_reader import RawCsvRecordV1, VerifiedSchemaRegistryV1
 
 GAME_MAPPING_POLICY_ID = "openmtgdata.game-mapping-policy.afr-source-facts.v1"
-AFR_GAME_RAW_FINGERPRINT = "ab037273127bbc1cb309dfc3a9031b344ad894794fe6f681489d009026cddadf"
+AFR_GAME_RAW_FINGERPRINT = "a2bddf4d55c72c4c329eda7af4740d0fce03a66a626f1c44148282ae80b5b840"
 _AFR_SOURCE_FIELDS = (
+    (0, "user_win_rate_bucket", "source_user_win_rate_bucket_raw"),
     (1, "user_n_games_bucket", "source_user_n_games_bucket_raw"),
     (2, "draft_id", "source_draft_id_raw"),
     (3, "build_index", "source_build_index_raw"),
@@ -59,6 +64,9 @@ _AFR_SOURCE_FIELDS = (
 def _mapping_for_group(
     group: RawSchemaGroupEvidenceV1,
     source_interpretation_contract_id: str,
+    *,
+    schema_registry_digest: str,
+    m4_review_evidence_id: str,
 ) -> GameFieldMappingV1:
     if group.raw_schema_fingerprint != AFR_GAME_RAW_FINGERPRINT:
         raise GameSchemaError("no reviewed M5.2 mapping exists for this Game fingerprint")
@@ -119,7 +127,11 @@ def _mapping_for_group(
             "source-labeled raw facts only; no actor, outcome, join, "
             "or game-identity interpretation"
         ),
-        evidence_bindings=GAME_EVIDENCE_BINDINGS,
+        evidence_bindings=(
+            *GAME_EVIDENCE_BINDINGS,
+            f"M3.2 schema registry:{schema_registry_digest}",
+            m4_review_evidence_id,
+        ),
     )
     result = replace(initial, game_field_mapping_id=derive_game_mapping_id(initial))
     validate_game_mapping(result)
@@ -132,7 +144,7 @@ def build_game_mapping_registry(
     *,
     semantic_source_catalog_digest: str,
     deep_inspection_evidence_digest: str,
-    reviewed_game_mapping_ids: tuple[str, ...] = (),
+    reviews: tuple[GameMappingReviewV1, ...] = (),
 ) -> GameMappingRegistryV1:
     """Account for all M3 Game groups; support only independently reviewed groups."""
     if schema_registry.schema_registry_digest == "":
@@ -141,16 +153,19 @@ def build_game_mapping_registry(
         (item for item in groups if item.source_kind == SourceKind.GAME.value),
         key=lambda item: item.raw_schema_fingerprint,
     )
-    if len(game_groups) != 36:
-        raise GameSchemaError(f"expected 36 observed Game groups, got {len(game_groups)}")
     m32 = {
         item.raw_schema_fingerprint: item
         for item in schema_registry.groups
         if item.source_kind is SourceKind.GAME
     }
+    if len(game_groups) != len(m32):
+        raise GameSchemaError("M3.1 Game groups do not match M3.2 schema authority")
     mapping_by_fp: dict[str, GameFieldMappingV1] = {}
     group_entries: list[GameMappingGroupV1] = []
-    approved = set(reviewed_game_mapping_ids)
+    seen_review_fingerprints: set[str] = set()
+    review_by_fp = {item.raw_schema_fingerprint: item for item in reviews}
+    if len(review_by_fp) != len(reviews):
+        raise GameSchemaError("duplicate Game mapping review fingerprint")
     for group in game_groups:
         authority = m32.get(group.raw_schema_fingerprint)
         if authority is None:
@@ -160,10 +175,32 @@ def build_game_mapping_registry(
         reason = (
             "No M5.2 full-stream review and explicit mapping approval for this physical schema."
         )
-        if group.raw_schema_fingerprint == AFR_GAME_RAW_FINGERPRINT and approved:
-            mapping = _mapping_for_group(group, authority.source_interpretation_contract_id)
-            if mapping.game_field_mapping_id not in approved:
-                raise GameSchemaError("review approval does not match derived AFR Game mapping ID")
+        review = review_by_fp.get(group.raw_schema_fingerprint)
+        if review is not None:
+            seen_review_fingerprints.add(group.raw_schema_fingerprint)
+            mapping = _mapping_for_group(
+                group,
+                authority.source_interpretation_contract_id,
+                schema_registry_digest=schema_registry.schema_registry_digest,
+                m4_review_evidence_id=derive_game_m4_review_evidence_id(review),
+            )
+            validate_game_mapping_review(
+                review,
+                group=GameMappingGroupV1(
+                    group.raw_schema_fingerprint,
+                    authority.source_interpretation_contract_id,
+                    GameDisposition.NEEDS_REVIEW,
+                    None,
+                    group.archive_count,
+                    group.source_archive_ids,
+                    len(group.fields),
+                    reason,
+                    None,
+                    (),
+                ),
+                mapping=mapping,
+                schema_registry_digest=schema_registry.schema_registry_digest,
+            )
             disposition = GameDisposition.SUPPORTED
             reason = (
                 "AFR PremierDraft Game source facts were checked over the complete M4.1 stream."
@@ -185,12 +222,16 @@ def build_game_mapping_registry(
                 disposition=disposition,
                 game_field_mapping_id=mapping.game_field_mapping_id if mapping else None,
                 archive_count=group.archive_count,
+                source_archive_ids=group.source_archive_ids,
                 field_count=len(group.fields),
                 reason=reason,
                 row_width_policy=mapping.row_width_policy if mapping else None,
                 known_anomalies=anomalies,
+                review=review,
             )
         )
+    if seen_review_fingerprints != set(review_by_fp):
+        raise GameSchemaError("Game mapping review references an unknown group")
     registry = GameMappingRegistryV1(
         schema_registry_digest=schema_registry.schema_registry_digest,
         semantic_source_catalog_digest=semantic_source_catalog_digest,
@@ -220,6 +261,10 @@ class GameAdapterV1:
     ) -> GameRecordV1:
         if raw_record.source_archive_id != source_archive_record.source_archive_id:
             raise GameSchemaError("raw record does not belong to supplied registered source")
+        if raw_record.raw_csv_record_contract_id != RAW_RECORD_CONTRACT_ID:
+            raise GameSchemaError("raw record contract is not accepted M4.1 RawCsvRecordV1")
+        if raw_record.reader_contract_id != READER_CONTRACT_ID:
+            raise GameSchemaError("raw record reader contract is not accepted M4.1")
         if (
             not isinstance(source_archive_record.filename_result, RecognizedSourceFilename)
             or source_archive_record.filename_result.source_kind is not SourceKind.GAME
