@@ -12,9 +12,6 @@ class SourceContainerError(RuntimeError):
     """The registered gzip payload is neither supported CSV nor a valid CSV TAR."""
 
 
-SOURCE_CONTAINER_POLICY_ID = "openmtgdata.source-container-policy.csv-gzip.v1"
-
-
 SOURCE_CONTAINER_POLICY_ID = "openmtgdata.source-container-policy.csv-gzip-v1"
 
 

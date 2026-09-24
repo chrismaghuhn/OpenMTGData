@@ -534,11 +534,11 @@ def test_mapping_registry_permutation_has_same_digest() -> None:
 
 
 def test_real_replay_mapping_review_artifact_is_optional_and_ignored() -> None:
-    analysis_path = Path("data/intermediate/m5.1/replay-field-analysis.json")
+    analysis_path = Path("data/intermediate/m5.2/replay-field-analysis-container-v2.json")
     if not analysis_path.exists():
-        pytest.skip("local M5.1 analysis report is not generated")
+        pytest.skip("corrected local Replay field analysis is not generated")
     document = json.loads(analysis_path.read_text(encoding="utf-8"))
-    assert len(document["groups"]) == 41
+    assert len(document["groups"]) == 40
 
 
 def test_real_m3_replay_analysis_covers_40_groups_when_local_artifacts_exist() -> None:

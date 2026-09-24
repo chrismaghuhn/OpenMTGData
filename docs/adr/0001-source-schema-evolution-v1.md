@@ -1,6 +1,6 @@
 # ADR 0001: Source schema evolution policy v1
 
-**Status:** Accepted for the M3.2 registry implementation.
+**Status:** Historical M3.2 policy decision. Its original 77-group input baseline is superseded by the container-corrected evidence in ADR 0004; the compatibility policy itself remains applicable.
 
 **Scope:** Structural source-schema compatibility only. This ADR does not define normalized fields or semantic adapters.
 
@@ -8,7 +8,7 @@
 
 The M3.2 registry consumes the digest-verified M3.1 deep-inspection report. The accepted input binds semantic source catalog `dcfbae5b65529ea42d637d2337418401f129ab1169db3c9bf0a7d84809573602` and M3.1 evidence `2572d8825d5eff17ad779695102f97d1ebb04b607545b02d1001d48461744add`.
 
-The configured report contains 77 physical groups: 36 Game and 41 Replay. M3.1 inspected at most 256 data records per archive. Its lexical classes and row-width observations are bounded evidence; they do not establish full-history behavior, source types, null semantics, or semantic equivalence.
+The original, pre-container-correction report contained 77 physical groups: 36 Game and 41 Replay. Those counts are historical and are not the current corpus authority. ADR 0004 documents the corrected current inventory of 75 groups: 35 Game and 40 Replay. M3.1 inspects at most 256 data records per archive. Its lexical classes and row-width observations are bounded evidence; they do not establish full-history behavior, source types, null semantics, or semantic equivalence.
 
 The group comparisons show no equal ordered-header surfaces across distinct raw fingerprints. One directional strict-subset candidate exists between the Game SIR group covering Sealed/TradSealed (1,604 fields) and the group covering PremierDraft/TradDraft (1,804 fields): the larger surface has 200 additional exact header names, while 81 shared fields have different observed lexical-class support. The policy therefore records an additive candidate for review but does not merge the groups. Reordered, removal, rename/alias candidate, lexical, empty-field, and row-width findings remain separately visible. The resulting 77 contracts are a conservative empirical result, not a target count.
 
