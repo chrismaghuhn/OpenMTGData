@@ -90,7 +90,7 @@ Stages have distinct authority and outputs:
 4. **Raw typed layer:** parsed source facts with source-native values and row provenance; conversion errors are explicit.
 5. **Normalized layer:** versioned, typed representations of source facts only, with source field mapping retained.
 6. **Joined replay/game layer:** joins only on verified keys, with cardinality and unmatched reporting.
-7. **ML views:** derived/reconstructed views, including `DecisionSampleV1` only where decision semantics are defensible.
+7. **ML views:** model-independent views may include source-sequence prediction or `DecisionSampleV1` only where its stricter decision semantics are defensible. These are distinct objectives and contracts.
 8. **Validation:** integrity, provenance, privacy, leakage, quality, and output checks; every stage reports counts.
 9. **Parquet shards:** typed, bounded-size columnar output and explicit partition metadata.
 10. **Release manifest:** immutable release identity, configs, inputs, schema versions, counts, hashes, and build environment metadata.
@@ -113,7 +113,7 @@ Derived IDs MUST be deterministic and namespaced by ID-contract version. They MU
 
 ## 10. Canonical IDs
 
-The architecture requires deterministic IDs for source archive, source game/match where available, replay event where available, and derived decision sample. Exact compositions are gated on source inspection because source identifiers and their semantics are not yet asserted.
+The architecture requires deterministic IDs for source archive, source game/match where available, replay event where available, turn-summary sequence/virtual view, and derived decision sample. Exact compositions are gated on source inspection because source identifiers and their semantics are not yet asserted. M8 owns final hashed sequence and virtual-view IDs; earlier milestones use provenance locators.
 
 An ID contract MUST specify namespace, canonical inputs, encoding, hash algorithm, collision handling, and version. A source archive ID SHOULD derive from provider plus SHA-256. A game/match ID MUST derive from verified source identity, using a native stable identifier when its uniqueness scope is known; otherwise use archive identity plus a deterministic locator and explicitly limit cross-archive deduplication. Replay event IDs add a verified event identity or locator. Decision IDs derive from game/replay identity plus stable decision position and the decision-contract version. Hash collision or same-ID/different-content cases are integrity failures, not silent overwrites.
 
@@ -155,6 +155,48 @@ The contract MUST distinguish these roles:
 
 A sample whose action boundary, acting player, or pre-decision state cannot be established MUST be excluded from the policy imitation view or marked unusable by its typed status. No sample is promoted to a more complete reconstruction level by assumption.
 
+## 13.1 `TurnSummarySequenceV1` — source-sequence prediction
+
+`TurnSummarySequenceV1` is a separate, non-policy training view for sources that contain ordered summary frames but do not establish atomic actions or decision boundaries. Its objective is **previous source turn summaries → next completed source turn summary**. It is not behavior cloning, action prediction, `DecisionSampleV1`, a policy observation, or a claim about legal/optimal play.
+
+For an ordered sequence of `N` frames, virtual next-turn view `K` uses exactly frames `[0:K)` as context and frame `K` as the target, for `K` from 1 through `N-1`. The target frame itself may summarize its completed turn; it is a next-summary prediction target, not an action label. No target is emitted for frame zero. Virtual views SHOULD be represented by a sequence locator and target ordinal, then materialized lazily. Implementations MUST NOT persist repeated full prefixes.
+
+For the reviewed 17Lands Replay mapping, a frame contains:
+
+* zero-based M5.1 `event_ordinal_within_source_record`;
+* exact source-side slot label `user` or `oppo` and its one-based source slot index;
+* the 33 exact M5.1 suffix-family strings in a deterministic versioned order, preserving parser-returned values including empty strings;
+* M5.1 mapping/source provenance sufficient to recover exact `(column_index, exact_header_name)` selectors.
+
+The frame projection MUST be an explicit allowlist of these frame fields. It MUST NOT include row-global `source_turn_count` / `source_turn_count_raw`, `on_play` setup control, `won` or outcome-like fields, `user_total_*` / `oppo_total_*` aggregates, or fields from future frames. A virtual view's context MUST contain only ordinals earlier than its target ordinal. The whole source sequence may remain available as provenance/storage, but later frame content MUST NOT affect an earlier view's model projection or view-specific identity inputs. A whole-source archive/sequence provenance identity MAY be bound separately and MUST be labeled provenance-only, not model input.
+
+`source_turn_side=user|oppo` is a source-relative ordering fact. It is not a decision actor, `SELF`/`OPPONENT`, or a player identity. The view MUST declare `view_kind=source_turn_summary_sequence_prediction`, `information_scope=source_record_summary_not_actor_observation`, `usable_for_policy_imitation=false`, and `actor_perspective_safe=false`. Visibility may be unknown or include information not available to either acting human; this view MUST NOT be relabeled or consumed as a policy observation.
+
+For any specific source, sequence coverage MUST be restricted to its explicitly reviewed M5 mapping. A similar header or schema-family membership alone does not enable sequence normalization for another archive. Logical sequence digests bind canonical sequence records and contracts, not shard boundaries, compression bytes, local paths, or execution timestamps. Final sequence/view IDs and train/validation/test grouping remain later M8 work; all views from the same sequence MUST stay in one split.
+
+### Separate training paths
+
+The currently supported 17Lands path is:
+
+```text
+ReplayEventV1 source turn-summary slots
+→ TurnSummarySequenceV1
+→ next-source-turn-summary prediction
+→ IDs, deduplication, and leakage-safe splits
+→ optional model-specific sequence adapter
+```
+
+The separate future action-level path remains:
+
+```text
+source with defensible action and decision boundaries
+→ DecisionSampleV1
+→ actor-safe pre-decision observation → observed action
+→ policy imitation
+```
+
+Implementing source-sequence prediction MUST NOT weaken or bypass any `DecisionSampleV1` actor, before-state, timing, visibility, or leakage requirement.
+
 ## 14. Hidden information and perspective safety
 
 Every policy-training view MUST be perspective-safe: it cannot reveal information unavailable to the acting player at that moment. Safety is established per field and temporal boundary, not inferred from a column's name. Hidden opponent cards, later revealed information, future actions, and post-decision outcomes MUST NOT enter the policy input. If safety cannot be established for a field or sample, it MUST be excluded from that view or carry a non-usable typed status and be filtered by default. Automated checks SHOULD test known future/outcome columns and field allowlists; manual source-semantic review remains necessary where data meaning is uncertain.
@@ -173,7 +215,7 @@ Quality MUST be machine-readable and filterable; prose alone is insufficient. `r
 
 ## 17. Dataset splitting contract
 
-Decision rows MUST NOT be split independently. All rows sharing a game/match MUST remain together. Group at the safest available verified higher-level identity (for example session/event/draft) where inspection establishes related-game leakage risk. Selection of hierarchy is a discovery decision, not a filename assumption. Missing grouping identity MUST cause explicit exclusion or a documented conservative group fallback; it MUST NOT trigger random row splitting.
+Decision rows MUST NOT be split independently. All rows sharing a game/match MUST remain together. All virtual `NextTurnPredictionViewV1` values derived from one `TurnSummarySequenceV1` MUST remain in the same split. Group at the safest available verified higher-level identity (for example session/event/draft) where inspection establishes related-game leakage risk. Selection of hierarchy is a discovery decision, not a filename assumption. Missing grouping identity MUST cause explicit exclusion or a documented conservative group fallback; it MUST NOT trigger random row splitting.
 
 Split membership uses a stable hash partition over the canonical group ID and a versioned split salt/contract, with published algorithm and thresholds. The same group MUST never cross splits. The split contract MUST be recorded in the release manifest and stable across reruns with unchanged inputs/config. Changes to grouping hierarchy, salt, algorithm, or thresholds create a new split contract version and release identity.
 
@@ -183,11 +225,11 @@ Deduplication MUST classify exact duplicate records, source duplicates, and iden
 
 ## 19. Dataset versioning
 
-Independent version identities are required for source archive record, source inspection, source catalog, raw schema, interpretation contract, normalized schema, decision schema, split contract, builder implementation, semantic dataset release, build/audit execution, and emitted artifact manifest. Schema/contract versions describe data meaning; builder/tool versions identify implementation; a Git commit alone is insufficient dataset identity. Breaking semantic changes require a new applicable schema/contract version and semantic release ID.
+Independent version identities are required for source archive record, source inspection, source catalog, raw schema, interpretation contract, normalized schema, turn-summary sequence/frame/view contracts, decision schema, split contract, builder implementation, semantic dataset release, build/audit execution, and emitted artifact manifest. Schema/contract versions describe data meaning; builder/tool versions identify implementation; a Git commit alone is insufficient dataset identity. Breaking semantic changes require a new applicable schema/contract version and semantic release ID.
 
 ## 20. Reproducibility
 
-`semantic_release_id` MUST be a SHA-256 identity over a versioned canonical tuple containing the semantic source-set projection digest, raw schema fingerprints, interpretation/normalized/decision/split contract IDs, canonical semantic configuration digest, and a digest of the canonically ordered logical records plus group/split/partition assignments. Canonical record serialization MUST exclude operational/audit fields and define ordering, null handling, type conversion, and float behavior. This makes the semantic ID independent of Parquet container bytes while still binding it to actual logical output. Operational timestamps, machine-local paths, inspector identities, and build execution identity are excluded. With identical semantic inputs and contracts, builders MUST establish whether logical records, IDs, and partitions are equivalent; compatible runtime/writer changes MUST NOT automatically be assumed equivalent.
+`semantic_release_id` MUST be a SHA-256 identity over a versioned canonical tuple containing the semantic source-set projection digest, raw schema fingerprints, interpretation/normalized/turn-summary-sequence/decision/split contract IDs as applicable, canonical semantic configuration digest, and a digest of the canonically ordered logical records plus group/split/partition assignments. Canonical record serialization MUST exclude operational/audit fields and define ordering, null handling, type conversion, and float behavior. This makes the semantic ID independent of Parquet container bytes while still binding it to actual logical output. Operational timestamps, machine-local paths, inspector identities, and build execution identity are excluded. With identical semantic inputs and contracts, builders MUST establish whether logical records, IDs, and partitions are equivalent; compatible runtime/writer changes MUST NOT automatically be assumed equivalent.
 
 Byte-identical Parquet is not promised across library versions or environments unless the implementation pins all relevant writer/runtime settings and demonstrates that guarantee. Until then the contract is semantic reproducibility plus per-output-byte hashes for audit, with dependency lock/environment recorded. Any deterministic output ordering the writer can guarantee SHOULD be used. Same logical records/partitions with different compatible writer/runtime versions MAY share an equivalent semantic dataset identity only when equivalence is established under the declared contract; output hashes may differ.
 
@@ -226,7 +268,7 @@ Avoid one monolithic file and avoid tiny-file explosions. Initial shard goal is 
 
 ## 26. Hugging Face dataset layout
 
-Publication is planned, not part of M0. A Hugging Face dataset repository SHOULD expose independently consumable configurations/views such as `replay_events`, `games`, and `decision_imitation`; `draft_decisions` is future scope. Users should be able to load only the view they need. Dataset scripts/configuration and Parquet layout must preserve stable schemas and provenance.
+Publication is planned, not part of M0. A Hugging Face dataset repository SHOULD expose independently consumable configurations/views such as `replay_events`, `games`, `turn_summary_sequences`, and `decision_imitation` where each view is separately supported; `draft_decisions` is future scope. `turn_summary_sequences` is source-summary prediction and MUST NOT be presented as policy imitation. Users should be able to load only the view they need. Dataset scripts/configuration and Parquet layout must preserve stable schemas and provenance.
 
 The Dataset Card MUST include description, intended uses, limitations, 17Lands attribution and source URLs, license per included source, no-endorsement statement, schema, provenance, build method, quality limitations, split semantics, citation, known biases, and reconstruction caveats. Publication tooling MUST compare uploaded files and card metadata with the release manifest. No dataset is published until each included source's license/status is verified.
 
@@ -264,7 +306,7 @@ An authoritative rules engine may later add legal action candidates, exact phase
 
 ## 35. Future teacher/model workflow
 
-One possible downstream workflow is 17Lands human decisions → OpenMTGData `DecisionSample` → optional Laya fine-tuning → specialized MTG teacher → downstream student/search systems. This is a consumer workflow only. It is not a promise about label quality, the definition of OpenMTGData, or a v0.1 implementation task.
+Two distinct downstream workflows may exist. The current 17Lands source-sequence path is `ReplayEventV1` turn summaries → `TurnSummarySequenceV1` next-summary prediction → optional model-specific sequence adapter. A separate action-level path, only when an authoritative source supports decision boundaries and perspective, is source facts → `DecisionSampleV1` → optional policy-imitation adapter. Neither workflow defines OpenMTGData around a particular consumer or promises label quality; adapters and training remain separate implementation tasks.
 
 ## 36. Architectural decisions and future ADRs
 

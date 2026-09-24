@@ -188,11 +188,21 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Acceptance criteria:** Written evidence supports each included decision type and each policy-input field; ambiguous cases have explicit exclusion/status.
 - **Out of scope:** Calling actions optimal/legal; model training.
 
-### M7.2 — Define and emit `DecisionSampleV1`
+### M7.2 — Define the turn-summary sequence training view
+
+- **Objective:** Support the current 17Lands path as next-source-turn-summary prediction, without claiming action-level behavior cloning.
+- **Allowed scope:** `TurnSummaryFrameV1`, `TurnSummarySequenceV1`, lazy `NextTurnPredictionViewV1`, streaming sequence builder/report, ignored local sequence artifacts.
+- **Dependencies:** M5.1, M4.1, and M7.1 evidence.
+- **Implementation requirements:** One normalized Replay source row becomes one ordered sequence of exact source turn-summary frames. A sequence of N frames defines N−1 virtual views: earlier frames `[0:K)` predict frame K. Persist each frame once; do not persist repeated full prefixes. Explicitly exclude row-global `turns`, `won`, totals, and future frames from the model projection. Preserve `user`/`oppo` as source-side labels, and mark the view unusable for policy imitation and actor-perspective unsafe.
+- **Tests:** Exact 33-suffix projection and selector lineage; sequence/row reconciliation; no row-global or future leakage; virtual-view boundaries; future/target mutation tests; logical digest determinism; bounded memory; full-stream reconciliation against M5.1 authority.
+- **Acceptance criteria:** The reviewed AFR source emits one sequence per M5-normalized row; every turn frame is represented once; virtual view count is calculated as `sum(max(frame_count - 1, 0))`; output remains distinct from `DecisionSampleV1`.
+- **Out of scope:** Actor or SELF/OPPONENT inference, `DecisionSampleV1`, Game joins, legal/optimal actions, tokenizer/Laya integration, Parquet, and training.
+
+### M7.3 — Define and emit action-level `DecisionSampleV1`
 
 - **Objective:** Produce model-agnostic behavioral samples for only approved decision types.
 - **Allowed scope:** Decision schema, extractor, quality codes.
-- **Dependencies:** M7.1.
+- **Dependencies:** M7.1 and a source/contract that supports action-level decision boundaries; M6.2 only where a reviewed Game join is needed. The current 17Lands AFR M7.1 result does not satisfy this dependency.
 - **Implementation requirements:** Label `observed_action`; separate input, label, and post-decision metadata; include provenance, reconstruction level, completeness, `observed_action_status`, `legal_actions_status`, and optional distinct `action_target_status` only for Magic action targets; no bare `target_status` and no unsupported field claims. Declare field origin/derivation and perspective safety.
 - **Tests:** Contract/schema tests; no-future-input tests; hidden-information exclusion tests; source-to-sample provenance checks.
 - **Acceptance criteria:** Policy view fails closed on unsafe/ambiguous samples and cannot present observed behavior as optimal policy.
@@ -204,7 +214,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 - **Objective:** Implement archive/game/event/decision IDs using verified identifiers.
 - **Allowed scope:** ID contract and helpers.
-- **Dependencies:** M3.1 and M7.2.
+- **Dependencies:** M3.1, M5.1, and M7.2 for turn-summary sequences and virtual views. Decision-sample IDs remain conditional on M7.3.
 - **Implementation requirements:** Specify namespace, canonical bytes, version, hash, collision handling, and fallback locator when native IDs are unavailable.
 - **Tests:** Golden IDs across runs/platforms; collision and changed-input tests.
 - **Acceptance criteria:** IDs are stable, deterministic and traceable; no random UUID is sole identity.
@@ -224,8 +234,8 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 - **Objective:** Partition by game or stronger verified grouping identity without leakage.
 - **Allowed scope:** Split ADR, algorithm, report.
-- **Dependencies:** M7.1, M8.1.
-- **Implementation requirements:** Select grouping from actual available identities; stable hash, salt and thresholds; version split contract; handle missing group IDs conservatively.
+- **Dependencies:** M7.2 and M8.1; M7.3 is additionally required only for an action-level decision view.
+- **Implementation requirements:** Select grouping from actual available identities; stable hash, salt and thresholds; version split contract; handle missing group IDs conservatively. All virtual next-turn views from one `TurnSummarySequenceV1` MUST remain in one split. Investigate stronger grouping identities before choosing the final hierarchy.
 - **Tests:** Same-game/session isolation, deterministic rerun, missing-ID behavior, no row-level split.
 - **Acceptance criteria:** No group crosses splits; all partition decisions are reproducible and reported.
 - **Out of scope:** Random row-level partitioning.
@@ -236,7 +246,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 - **Objective:** Write typed bounded-size Parquet outputs.
 - **Allowed scope:** Writer, shard layout, schema metadata.
-- **Dependencies:** M5.1, M5.2, M7.2, M8.3.
+- **Dependencies:** M5.1, M5.2, M7.2, M8.3; M7.3 is additionally required only for an action-level `decision_imitation` view.
 - **Implementation requirements:** Incremental writes; explicit compression; target shard range and partitioning selected by benchmark; avoid empty/tiny partition explosions; record row counts and hashes.
 - **Tests:** Round-trip schema/readability, shard boundary behavior, deterministic logical content, nullable fields.
 - **Acceptance criteria:** No monolithic full-data materialization; each shard matches declared schema and has auditable counts.
@@ -281,7 +291,7 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 - **Objective:** Package independently consumable Parquet views with complete documentation.
 - **Allowed scope:** Dataset card, configuration metadata, release packaging.
 - **Dependencies:** M9.2 and M10.1.
-- **Implementation requirements:** `replay_events`, `games`, `decision_imitation` where available; document source attribution, per-source licenses, limitations, provenance, schema, method, quality, splits, citation, biases, and reconstruction caveats.
+- **Implementation requirements:** `replay_events`, `games`, `turn_summary_sequences`, and `decision_imitation` only where separately supported; document source attribution, per-source licenses, limitations, provenance, schema, method, quality, splits, citation, biases, and reconstruction caveats. Turn-summary sequence prediction is not policy imitation.
 - **Tests:** Card/manifest consistency and configuration loading against tiny release.
 - **Acceptance criteria:** Users can select a view; no unverified license/source is included; no endorsement implication.
 - **Out of scope:** Publishing without explicit release operation; `draft_decisions` implementation.
@@ -346,8 +356,8 @@ This plan turns [SPEC.md](SPEC.md) into reviewable work. Milestones are sequenti
 
 - **Objective:** Convert stable core views into one requested model/tool format.
 - **Allowed scope:** Separate adapter package/export layer.
-- **Dependencies:** Published/stable DecisionSample contract and explicit consumer request.
-- **Implementation requirements:** Preserve core sample IDs and contract versions; document lossy transformations; keep architecture/tokenizer-specific fields outside core schemas.
+- **Dependencies:** A published/stable core view contract (for example `TurnSummarySequenceV1` or, only when supported, `DecisionSampleV1`) and explicit consumer request.
+- **Implementation requirements:** Preserve core sequence/view/sample locators and contract versions; document lossy transformations; keep architecture/tokenizer-specific fields outside core schemas.
 - **Tests:** Adapter contract and round-trip/linkage tests where possible.
 - **Acceptance criteria:** Adapter output maps back to model-independent records and does not alter the core release.
 - **Out of scope:** Training Laya, MageZero, Forge models, or redefining OpenMTGData around a consumer.
